@@ -25,7 +25,7 @@ class ConcurrentWrites(WorkDirTest):
         # The assessment's probe: both threads shared one .tmp file, one crashed and a run was lost.
         tid = self.ticket()
 
-        def slow(entry, payload, build):
+        def slow(entry, payload, build, target=None):
             time.sleep(0.3)
             return fake_run("CODE_EXECUTION", build=build, entry=entry)
         errors = []

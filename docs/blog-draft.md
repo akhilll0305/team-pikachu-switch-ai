@@ -47,9 +47,20 @@ Now every cheat fails by construction. There's no script to sleep or call `ctype
 
 The second thing the audit found: reporter text still leaked to the agents, through the ticket's title, the screen's excerpts and exception messages. Now everything an agent can read holds fixed fields only: hashes, sizes, allowlisted names, outcome classes, numbers, exception type names plus a hash of the message, and YAML tags only if they're known PyYAML tags. A canary test puts one string in every field a reporter controls and checks it never shows up in anything an agent can read. A paraphrased injection that slips past our regex screen still reaches the agents as nothing but a SHA-256.
 
-## Switch Trust: planned
+## Switch Trust: the first wall
 
-Switch Trust guardrails are built into Switch: an admin enters a Trust endpoint, policy ID and API key on the server's Home page, and every human message is checked before it becomes a room message. We plan to use it as the first wall. At the time of writing we have not configured it, so we can't show it blocking anything yet.
+Switch Trust guardrails are built into Switch: an admin enters a Trust endpoint, policy ID and API key on the server's Home page, and every human message is checked before it becomes a room message. We turned it on with a policy of two regex patterns, set to Block, for people's messages only. Live on 2026-11-06 it blocked our injection replay (04) before it entered the room: no ticket, and Intake never saw it. Every real report, proof and command passed unchanged.
+
+We left the Jailbreak detector off. In our test it also blocked report 02's proof, because a bug report's proof describes an attack. Nothing is set to Redact, because redaction would change a payload and its SHA-256. Two fixed phrases are easy to reword past, so Trust is the first wall, not the one that holds: agents still only ever see fixed fields.
+
+## Borrowing from the OpenSSF discussion
+
+[OpenSSF issue #178](https://github.com/ossf/wg-vulnerability-disclosures/issues/178) collects practices for AI-written reports, and its working group has a draft guide. We took what fit a single library and put it in code. All of this is verified offline, in tests and the rehearsal; none of it has run live yet.
+
+- **Clean-state repeats.** A commenter there put it as "Reproduce N times from clean state, or it doesn't exist." Every check now runs the payload three times, one after another, each in a new container. If the runs disagree, the result is `NOT_RELIABLY_REPRODUCED` and only a maintainer's override can escalate it. On our machine that adds about a second and a half to a normal check.
+- **One reason, one question.** The Skeptic's disputes now carry exactly one reason code, and Intake refuses a code the recorded evidence contradicts. When a maintainer closes a ticket, the reporter gets at most one fixed question, such as "Which exact input and entry point trigger it?", and never anything an agent wrote.
+- **Scope in code, and the version up front.** A short scope policy rules out the loaders PyYAML itself documents as unsafe, and Intake enforces it before any sandbox run. The proof request asks for four fields, and the affected version is required.
+- **A record per reporter.** Intake counts outcomes per reporter under an HMAC, never names or text. After two proofs that did not reproduce, a reporter may have one open report at a time until a maintainer lifts it. Nobody is banned, and there is no AI detection: we don't detect AI, we require proof.
 
 ## Try it
 

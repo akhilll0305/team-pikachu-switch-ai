@@ -14,18 +14,27 @@ jobs:
     timeout-minutes: 25
     env:
       PROVEIT_REQUIRE_DOCKER: "1"   # sandbox tests fail instead of skipping if Docker is missing
+      PROVEIT_REQUIRE_SQLPARSE: "1"
       PYTHONDONTWRITEBYTECODE: "1"
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - name: Build both sandbox images
         run: python -m proveit build
+      - name: Build sqlparse images explicitly
+        run: python -m proveit build --target sqlparse
+      - name: Install test-only packages (OSV schema validator, YAML parser for the template tests)
+        run: python -m pip install jsonschema==4.26.0 pyyaml==6.0.2
       - name: Full test suite
         run: python -m unittest discover -s tests -v
       - name: Offline rehearsal, twice
         run: python scripts/rehearse.py --twice
+      - name: sqlparse rehearsal, twice
+        run: python scripts/rehearse.py --second-target --twice
 
   # Windows: the unit tests (no Linux Docker engine there, so the sandbox tests
   # skip). Catches anything that breaks the suite on a Windows machine, such as
@@ -37,6 +46,8 @@ jobs:
       PYTHONDONTWRITEBYTECODE: "1"
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"

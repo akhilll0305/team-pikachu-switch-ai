@@ -1,10 +1,12 @@
 """The evidence pack: everything an agent may know about a ticket, and nothing a reporter wrote."""
 
-from . import judge, store
-from .config import TARGET
+import hashlib
+import json
+
+from . import judge, store, targets
 
 TICKET_FIELDS = ("id", "status", "claim", "severity", "entry_point", "payload_sha256", "payload_bytes", "tags",
-                 "poc_problem", "missing", "screen_rules")
+                 "poc_problem", "missing", "screen_rules", "affected_version", "tested_version")
 
 
 def latest_entry(record, build):
@@ -56,17 +58,24 @@ def is_current(review, record):
     return bool(review) and review.get("evidence") == current_evidence(record)
 
 
+def review_token(record):
+    """Identifies the immutable run files a reviewer actually inspected, not its later verdict."""
+    return hashlib.sha256(json.dumps(current_evidence(record), sort_keys=True).encode()).hexdigest()[:16]
+
+
 def pack(record):
     vulnerable = latest_run(record, "vulnerable")
     patched = patched_for(record, vulnerable)
     facts = judge.facts(record, vulnerable, patched)
     facts["skeptic_verdict_current"] = None if not record.get("skeptic") else is_current(record["skeptic"], record)
     return {
+        "review_token": review_token(record),
         "ticket": {k: record.get(k) for k in TICKET_FIELDS if k in record},
-        "target": {name: spec["version"] for name, spec in TARGET["builds"].items()},
+        "target": {name: spec["version"] for name, spec in targets.for_record(record).builds.items()},
         "vulnerable_run": judge.summary(vulnerable) if vulnerable else None,
         "patched_run": judge.summary(patched) if patched else None,
-        "runs": [{"build": r["build"], "file": r["file"], "outcome": r.get("outcome"), "by": r.get("by")}
+        "runs": [{"build": r["build"], "file": r["file"], "outcome": r.get("outcome"), "by": r.get("by"),
+                  "container_runs": r.get("container_runs", 1), "agreeing": r.get("agreeing")}
                  for r in record.get("runs", [])],
         "checklist": facts,
         "notes": judge.notes(facts, vulnerable, patched),
@@ -81,11 +90,16 @@ def text(p):
              "claim %s | claimed severity %s | entry point %s | payload sha256 %s (%s bytes)" % (
                  t.get("claim") or "-", t.get("severity") or "-", t.get("entry_point") or "-",
                  (t.get("payload_sha256") or "-")[:16], t.get("payload_bytes")),
-             "tags: %s" % (", ".join(t.get("tags") or []) or "none")]
+             "tags: %s" % (", ".join(t.get("tags") or []) or "none"),
+             "affected version: reported %s, tested %s" % (t.get("affected_version") or "not stated",
+                                                          p["target"].get("vulnerable"))]
     for key in ("vulnerable_run", "patched_run"):
         run = p[key]
         if run:
             lines.append("- " + judge.describe(run))
+            if judge.disagreed(run):
+                lines.append("  runs disagreed: see each run")
+                lines.extend("  " + line for line in judge.run_lines(run))
         else:
             lines.append("- %s build: not run yet" % key.split("_")[0])
     lines.append("checklist:")
@@ -96,8 +110,15 @@ def text(p):
     if p.get("skeptic"):
         s = p["skeptic"]
         stale = "" if p["checklist"].get("skeptic_verdict_current") else " (STALE: made on earlier evidence; review again)"
-        lines.append("skeptic: %s by %s%s%s" % (s["verdict"], s["by"], (": " + s["reason"]) if s.get("reason") else "", stale))
+        why = ""
+        if s.get("code"):
+            why = ": %s (%s)" % (s["code"], s.get("reason") or "")
+        elif s.get("reason"):
+            why = ": " + s["reason"]  # a free-text dispute recorded before reason codes
+        lines.append("skeptic: %s by %s%s%s%s" % (s["verdict"], s["by"], why,
+                                                " (overridden)" if s.get("overridden") else "", stale))
     if p.get("override"):
         o = p["override"]
         lines.append("override by %s%s" % (o["by"], "" if o.get("current") else " (made on earlier evidence)"))
+    lines.append("review token: %s (include review=%s in a room verdict)" % (p["review_token"], p["review_token"]))
     return "\n".join(lines)

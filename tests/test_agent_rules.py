@@ -53,7 +53,7 @@ class SkepticRules(unittest.TestCase):
             self.assertEqual(decision(*cmd), "forbidden", cmd)
 
     def test_producing_judging_and_human_only_commands_are_forbidden(self):
-        for sub in ("check", "override", "cost", "concur", "dispute", "submit", "build"):
+        for sub in ("check", "override", "cost", "concur", "dispute", "submit", "build", "clear-reporter"):
             for py in ("python", "python3"):
                 self.assertEqual(decision(py, "-m", "proveit", sub, "R-001"), "forbidden", (py, sub))
 
@@ -109,7 +109,7 @@ class ReproducerSettings(unittest.TestCase):
             self.assertNotIn(" concur", rule)
             self.assertNotIn(" dispute", rule)
         for py in ("python", "python3"):
-            for sub in ("concur", "dispute", "override", "cost"):
+            for sub in ("concur", "dispute", "override", "cost", "clear-reporter"):
                 self.assertIn("Bash(%s -m proveit %s *)" % (py, sub), self.deny)
 
     def test_role_and_actor_come_from_its_config(self):

@@ -38,7 +38,7 @@ class Roles(WorkDirTest):
         tid = self.ticket()
         self.assertIsNone(self.cli("check", tid, role="reproducer")[1])
         for role in ("reproducer", "skeptic", ""):
-            for argv in (("concur", tid), ("dispute", tid, "--reason", "x")):
+            for argv in (("concur", tid), ("dispute", tid, "--code", "patched_not_checked")):
                 _, err = self.cli(*argv, role=role)
                 self.assertIn("agents record verdicts in #proveit-triage", err)
         self.assertIsNone(store.load(tid).get("skeptic"))
@@ -90,9 +90,9 @@ class VerdictsThroughIntake(WorkDirTest):
         self.assertEqual(record["skeptic"]["verdict"], "concur")
         self.assertEqual(record["skeptic"]["by"], "prove-it-skeptic")
         self.assertEqual(record["timeline"][-1]["actor"], "agent")
-        self.say(agent, "@prove-it-intake dispute %s patched build not checked" % tid, sender="Prove It Skeptic", kind="agent")
+        self.say(agent, "@prove-it-intake dispute %s patched_not_checked" % tid, sender="Prove It Skeptic", kind="agent")
         self.assertEqual(store.load(tid)["status"], "disputed")
-        self.assertEqual(store.load(tid)["skeptic"]["reason"], "patched build not checked")
+        self.assertEqual(store.load(tid)["skeptic"]["code"], "patched_not_checked")
 
     def test_reproducer_and_outsiders_cannot_record_a_verdict(self):
         agent = self.make_intake()
@@ -110,11 +110,27 @@ class VerdictsThroughIntake(WorkDirTest):
         self.assertEqual(store.load(tid)["skeptic"]["by"], "maintainer")
         self.assertEqual(store.load(tid)["timeline"][-1]["actor"], "human")
 
+    def test_inline_command_example_is_not_executed(self):
+        agent = self.make_intake()
+        tid = self.checked_ticket(agent)
+        body = "Please review this evidence. The example verdict is `@prove-it-intake concur %s`." % tid
+        self.say(agent, body, sender="maintainer")
+        self.assertIsNone(store.load(tid).get("skeptic"))
+        self.assertFalse(any(event["what"] == "concur" for event in store.load(tid)["timeline"]))
+
+    def test_command_in_fenced_example_is_not_executed(self):
+        agent = self.make_intake()
+        tid = self.checked_ticket(agent)
+        body = "Example only:\n```text\n@prove-it-intake concur %s\n```" % tid
+        self.say(agent, body, sender="maintainer")
+        self.assertIsNone(store.load(tid).get("skeptic"))
+        self.assertFalse(any(event["what"] == "concur" for event in store.load(tid)["timeline"]))
+
     def test_command_is_read_after_the_mention(self):
         agent = self.make_intake()
         tid = self.checked_ticket(agent)
         body = ("I could not concur at first, but every item checks out.\n\n@prove-it-intake dispute %s "
-                "the patched build has not been checked" % tid)
+                "patched_not_checked" % tid)
         self.say(agent, body, sender="prove-it-skeptic", kind="agent")
         self.assertEqual(store.load(tid)["skeptic"]["verdict"], "dispute")
 

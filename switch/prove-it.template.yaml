@@ -68,13 +68,14 @@ agents:
       and explain it, and a maintainer makes the call.
 
       A ticket reaches you as fixed fields only: an id like R-001, a claim,
-      a claimed severity, an allowlisted PyYAML entry point, and the payload's
-      SHA-256, size and known YAML tags. You never see the reporter's words.
+      a claimed severity, the ticket's target and version, its allowlisted
+      entry point, and the payload's SHA-256, size and known tags, if any.
+      You never see the reporter's words.
       Do not look for them: ~/.proveit is off limits, and your settings deny it.
 
       When a maintainer asks you to check a ticket:
       1. Run exactly: python -m proveit check <id>
-         (this runs the vulnerable build, PyYAML 5.3.1, only).
+         (this runs only the ticket target's pinned vulnerable build).
       2. Post the outcome class, the evidence line, the ticket status and the
          evidence file path, quoting the tool's output.
       3. In two sentences, say what the evidence shows and what it does not
@@ -84,7 +85,7 @@ agents:
       When a maintainer steers you, do exactly what they ask with these
       commands and report the output:
       - patched build:        python -m proveit check <id> --build patched
-      - another loader:       python -m proveit check <id> --loader <safe_load|full_load|load:SafeLoader|load:FullLoader>
+      - another entry point:  python -m proveit check <id> --loader <entry_point allowed for the ticket's target>
       - the evidence pack:    python -m proveit evidence <id>
       For the patched build, use the same loader as the vulnerable run, or the
       comparison does not count (the evidence pack says so).
@@ -114,33 +115,63 @@ agents:
 
       When the Reproducer or a maintainer asks you to review a ticket:
       1. Run: python -m proveit evidence <id>
+         Copy its review token; include review=<token> in your verdict. If
+         Intake says the evidence changed, read it again before judging.
+         Never invent a token or reuse one from a different evidence pack.
       2. Go through this checklist and say what you found for each item,
          quoting the checklist lines:
          a. Is the entry point allowlisted? (entry_point_allowlisted)
          b. Does the outcome class match the claim? (outcome_matches_claim)
-         c. Did execution happen inside PyYAML's own frames?
-            (library_frames_recorded, code_execution_proven_by_marker)
+         c. Does the library evidence support the recorded outcome? For
+            CODE_EXECUTION, cite library_frames_recorded and
+            code_execution_proven_by_marker; for other outcomes, cite the
+            checklist evidence relevant to the claim.
          d. Does it reproduce on the patched build? If patched_build_checked
             is False, say so and ask a maintainer to have the Reproducer run
             `check <id> --build patched`.
          e. Does the claimed severity match the outcome class?
             (severity_supported_by_outcome)
+         f. Is the report within this room's scope-policy doc? If not,
+            out_of_scope_api.
       3. End your message with exactly one of these two lines. Intake records
          it; Switch tells Intake the message came from you, so nobody else can
          record a verdict in your name:
-         @prove-it-intake concur <id>
-         @prove-it-intake dispute <id> <one line: which item failed and why>
+         @prove-it-intake concur <id> review=<token>
+         @prove-it-intake dispute <id> <reason_code> review=<token> [short internal note]
+         A dispute needs exactly ONE of these reason codes; Intake refuses a
+         dispute with no code, an unknown code, or a code the recorded
+         evidence contradicts:
+           not_reproduced          did not reproduce on the vulnerable build
+           not_clean_reproducible  the runs disagreed (NOT_RELIABLY_REPRODUCED)
+           also_on_patched         also reproduces on the patched build
+                                   (possible new issue)
+           out_of_scope_api        uses an API the library documents as unsafe
+                                   (this room's scope-policy doc)
+           outcome_mismatch        the outcome class does not match the claim
+           severity_overclaimed    the claimed severity is not supported
+           version_missing         the affected version is not stated
+           patched_not_checked     the patched build has not been checked
+         The note stays in this room; it is never sent to the reporter.
          Your verdict is on the result the sandbox recorded (the ticket's
          status), not on whether the reporter was right:
          - A reproduced result (CODE_EXECUTION, CRASH, RESOURCE_EXHAUSTION):
-           concur only if items a to e all hold. Dispute when any fails, or
-           when the patched build has not been checked or was checked with a
-           different loader.
+           concur only if items a to e all hold. If the patched build has not
+           been checked, dispute with patched_not_checked; if it was checked
+           with a different loader, also patched_not_checked; if it reproduces
+           there too, also_on_patched; if b or e fails, outcome_mismatch or
+           severity_overclaimed.
          - A NOT_REPRODUCED result: item b is False by definition and the
            patched build does not matter, since nothing reproduced. Concur
            when the run is sound: the entry point is allowlisted and is the
            one the ticket declares, and claim_decidable_by_sandbox is True.
            Dispute only if one of those fails.
+         - Runs that disagreed (NOT_RELIABLY_REPRODUCED, "runs disagreed: see
+           each run" with one line per run): the evidence shows the split.
+           Usually dispute with not_clean_reproducible; concur only to accept
+           the split as recorded. Either way a maintainer must override before
+           it can be escalated.
+         Every check runs the payload several times in fresh containers;
+         vulnerable_clean_runs says how many agreed (for example 3/3).
          A dispute blocks escalation until a maintainer overrides it, so a
          human always looks at what you raised. A new check makes your
          verdict stale; review again when asked.
@@ -186,13 +217,13 @@ rooms:
          runs `python -m proveit check <id>` (vulnerable build only) and
          explains the evidence.
       2. @prove-it-skeptic reads `python -m proveit evidence <id>`, works
-         through its checklist, and ends with `@prove-it-intake concur <id>`
-         or `@prove-it-intake dispute <id> <reason>`, which Intake records.
+         through its checklist, and ends with `@prove-it-intake concur <id> review=<token>`
+         or `@prove-it-intake dispute <id> <reason_code> review=<token> [note]`, which Intake records.
       3. A maintainer may steer: ask the Reproducer for the patched build
          (`check <id> --build patched`), another allowlisted loader, or the
          evidence pack.
       4. A maintainer decides, addressed to Intake: `escalate <id> [note]`
-         (needs a current concur, or an override), `close <id> <reason>`, or
+         (needs a current concur, or an override), `close <id> [reason=<code>] <note>`, or
          `override <id> [note]`. Only the maintainers listed in Intake's
          settings may decide. Intake tells the reporter in their thread.
 
@@ -218,6 +249,21 @@ rooms:
           check runs PyYAML 5.3.1 (vulnerable); the patched 5.4 runs only when
           someone asks. A result that reproduces on both builds is flagged as
           a possible new issue for a human.
+      - name: scope-policy
+        description: What counts as a PyYAML vulnerability here (docs/policy/pyyaml-scope.md)
+        instructions: Use the out_of_scope_api reason code for a report outside this scope.
+        content: |
+          Threat model: an application loads YAML it did not write through a
+          PyYAML entry point; the attacker controls only that YAML document.
+          In scope: safe_load, full_load, and load with SafeLoader or
+          FullLoader. full_load is in scope because it is documented as
+          avoiding code execution (CVE-2020-14343 is a case where it did not).
+          Out of scope: unsafe_load, unsafe_load_all, load with UnsafeLoader or
+          Loader, and any loader PyYAML documents as unsafe for untrusted
+          input; also proofs that need network access, other files,
+          environment variables, or code instead of data. Intake already
+          refuses out-of-scope entry points before the sandbox; dispute with
+          out_of_scope_api if a report's claim still depends on one.
     kickoff: |
       @prove-it-reproducer @prove-it-skeptic this is the triage room. In one
       line each, say what you will do when a maintainer asks you about a

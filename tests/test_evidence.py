@@ -126,7 +126,7 @@ class EscalationNeedsReview(Base):
     def test_dispute_still_blocks_and_close_needs_no_review(self):
         tid = self.ticket()
         self.check(tid, "NOT_REPRODUCED")
-        self.skeptic(tid, "dispute", "the claim is code execution but nothing ran")
+        self.skeptic(tid, "dispute", "outcome_mismatch the claim is code execution but nothing ran")
         with self.assertRaises(states.IllegalTransition):
             actions.decide(tid, "escalate", "human", "maintainer")
         actions.decide(tid, "close", "human", "maintainer", "slop")

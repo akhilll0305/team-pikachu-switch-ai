@@ -81,6 +81,19 @@ SANDBOX_LIMITS = {
     "timeout_seconds": 20,
 }
 
+# How many times one `check` runs the payload: one after another, each in a
+# brand-new container with the limits above, nothing shared between runs. All
+# runs must agree for the check to have an outcome; if they differ the check
+# records NOT_RELIABLY_REPRODUCED. Deliberately not an environment variable,
+# so an agent's shell cannot lower it.
+CHECK_RUNS = 3
+
+# A reporter whose proofs failed this many times (closed as NOT_REPRODUCED or
+# NOT_RELIABLY_REPRODUCED, or rejected at Intake; at most one per ticket) may
+# have only one open report at a time until a maintainer runs clear-reporter
+# (decision D-018). Never a ban. Not an environment variable.
+INVALID_THRESHOLD = 2
+
 PROOF_CONTRACT = {
     "code_execution": (
         "The payload must make the library itself execute code that creates "
@@ -102,10 +115,21 @@ PROOF_CONTRACT = {
     ),
 }
 
+# The proof request lists four fields (decision D-016). affected_version is required; expected and
+# actual are the reporter's own words and stay in the private report, never in the ticket.
 POC_FORMAT_HELP = (
-    "Send the proof as data, not code: a line `Entry point: <one of %s>` and the YAML "
-    "payload in a ```yaml block (UTF-8, at most %d KB). Python scripts are not accepted, and "
-    "the loaders PyYAML documents as unsafe (unsafe_load, UnsafeLoader, Loader) are out of scope "
-    "because using them is not a vulnerability."
+    "Send the proof as four fields (an example):\n"
+    "```\n"
+    "affected_version: 5.3.1\n"
+    "entry_point: full_load\n"
+    "payload: |\n"
+    "  <YAML>\n"
+    "expected: <what should happen>\n"
+    "actual: <what happens>\n"
+    "```\n"
+    "The proof is data, not code: `entry_point` is one of %s, and `payload` is the YAML document "
+    "(UTF-8, at most %d KB; a ```yaml block works too). `affected_version` is required. Python scripts "
+    "are not accepted, and the loaders PyYAML documents as unsafe (unsafe_load, UnsafeLoader, Loader) "
+    "are out of scope because using them is not a vulnerability."
     % (", ".join("`%s`" % k for k in ENTRY_POINTS), PAYLOAD_MAX_BYTES // 1024)
 )

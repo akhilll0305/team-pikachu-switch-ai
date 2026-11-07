@@ -149,7 +149,7 @@ def private_dir(ticket_id):
     return folder
 
 
-def create(fields, raw_text, source):
+def create(fields, raw_text, source, contact=None):
     """fields: only fixed values (claim, severity, entry_point, ...). raw_text goes to the private folder."""
     ticket_id = next_id()
     folder = _dir(ticket_id)
@@ -157,6 +157,8 @@ def create(fields, raw_text, source):
     private = private_dir(ticket_id)
     private.mkdir(parents=True, mode=0o700)
     _write(private / "report.md", raw_text)
+    if contact is not None:
+        save_private_json(ticket_id, "contact.json", contact)
     record = dict(fields, id=ticket_id, status="new", source=source, created_at=now(),
                   times={"received": time.time()}, timeline=[], runs=[])
     save(record)

@@ -20,6 +20,7 @@ triage a ticket with no reporter text in it.
 """
 
 import argparse
+import functools
 import json
 import logging
 import os
@@ -28,7 +29,7 @@ import sys
 import threading
 from pathlib import Path
 
-from . import actions, evidence, messages, reports, screen, states, store
+from . import actions, config, evidence, messages, reasons, reports, reputation, screen, states, store, targets
 from .config import LEGACY_STATE_DIR, PROVEIT_HOME, ensure_home
 from .switch_client import Agent, CursorStore, SwitchError, open_to_everyone, register_agent
 
@@ -37,7 +38,7 @@ STATE_FILE = Path(os.environ.get("PROVEIT_STATE") or PROVEIT_HOME / "intake.json
 LEGACY_STATE_FILE = LEGACY_STATE_DIR / "intake.json"
 TRIAGE_LINK_LABEL = "triage"
 # Decisions only the maintainers listed in the state file may make.
-HUMAN_ONLY = ("escalate", "close", "release", "override", "notify")
+HUMAN_ONLY = ("escalate", "close", "release", "override", "notify", "clear-reporter")
 # Verdicts only the Skeptic agent (or a maintainer) may record.
 VERDICTS = ("concur", "dispute")
 
@@ -104,7 +105,7 @@ def load_state():
 
 
 def save_state(state):
-    if STATE_FILE.parent == PROVEIT_HOME:
+    if STATE_FILE.parent == config.PROVEIT_HOME:
         ensure_home()
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
@@ -112,6 +113,15 @@ def save_state(state):
 
 
 def cmd_setup(args):
+    from .trial import plan
+    trial = plan(args.trial) if getattr(args, "trial", None) else None
+    if trial and not (Path(trial["folder"]) / "trial.json").is_file():
+        sys.exit("Prepare the trial first: python -m proveit.trial " + args.trial)
+    if trial and args.create_rooms:
+        sys.exit("For a trial, deploy only its generated templates; they keep triage private")
+    if trial and (args.agent_name != DEFAULTS["agent_name"] or any(getattr(args, key) for key in
+            ("intake_room", "triage_room", "reproducer", "skeptic"))):
+        sys.exit("--trial supplies isolated agent/room names; do not combine it with name overrides")
     env_file = args.env_file
     if not env_file:
         candidates = console_env_candidates()
@@ -126,7 +136,7 @@ def cmd_setup(args):
         sys.exit("%s has no AGENT_REGISTRATION_TOKEN" % env_file)
     print("Switch server: %s (settings from %s)" % (api_url, env_file))
 
-    name = args.agent_name
+    name = trial["agent_name"] if trial else args.agent_name
     try:
         reg = register_agent(api_url, token, name,
                              "Prove It intake: screens bug reports and asks for a runnable proof before any human reads them.",
@@ -145,6 +155,10 @@ def cmd_setup(args):
               "'Who can talk to your agent' to everyone." % env_file)
 
     state = dict(DEFAULTS, agent_name=name, api_url=api_url, agent_id=reg["id"], api_key=reg["api_key"])
+    if trial:
+        state.update({key: trial[key] for key in ("agent_name", "reproducer", "skeptic", "intake_room", "triage_room",
+                                                   "target_rooms", "agent_directories")})
+        state["trial"] = args.trial
     for key in ("intake_room", "triage_room", "reproducer", "skeptic"):
         if getattr(args, key):
             state[key] = getattr(args, key)
@@ -172,7 +186,7 @@ def cmd_setup(args):
         except SwitchError as exc:
             print("note: could not link rooms (%s)" % exc)
         print("Rooms ready: %s, %s (linked as %r)" % (state["intake_room"], state["triage_room"], TRIAGE_LINK_LABEL))
-    print("\nNext: python -m proveit.intake run")
+    print("\nNext: python -m proveit.intake%s run" % (" --trial " + args.trial if trial else ""))
 
 
 # --------------------------------------------------------------------------
@@ -182,21 +196,39 @@ def ticket_from_record(record):
     """Rebuild the parse result for a stored ticket (its payload lives in private/)."""
     return reports.Ticket(claim=record.get("claim", ""), severity=record.get("severity", "unrated"),
                           entry_point=record.get("entry_point", ""), payload=store.payload(record["id"]),
-                          poc_problem=record.get("poc_problem", ""), missing=list(record.get("missing", [])))
+                          poc_problem=record.get("poc_problem", ""), missing=list(record.get("missing", [])),
+                          out_of_scope_entry=record.get("out_of_scope_entry", ""),
+                          affected_version=record.get("affected_version", ""),
+                          target=record.get("target", "") or ticket_target_key(record))
 
 
-def fill(record, ticket):
-    """Copy only fixed fields from a parsed ticket into the agent-readable record."""
+def fill(record, ticket, target=None):
+    """Copy only fixed fields from a parsed ticket into the agent-readable record.
+
+    `target` (or the record's own `target`, else PyYAML) decides the out-of-scope
+    names, the tag reader and the tested version. The ticket records its target.
+    """
     from . import poc
+    target = target or targets.for_record(record)
     record.update({
+        "target": target.key,
         "claim": ticket.claim, "severity": ticket.severity, "entry_point": ticket.entry_point,
         "poc_problem": ticket.poc_problem, "missing": ticket.missing,
+        "out_of_scope_entry": ticket.out_of_scope_entry if ticket.out_of_scope_entry in target.out_of_scope_names else (
+            "an unsafe loader" if ticket.out_of_scope_entry else ""),
         "payload_sha256": poc.sha256(ticket.payload) if ticket.payload else None,
         "payload_bytes": len(ticket.payload.encode("utf-8", "surrogatepass")) if ticket.payload else 0,
-        "tags": poc.tags(ticket.payload),
+        "tags": target.tags(ticket.payload),
+        # Normalized by reports.parse_version; only the pinned builds are ever tested (decision D-016).
+        "affected_version": reports.parse_version(ticket.affected_version),
+        "tested_version": target.vulnerable_version,
     })
     if ticket.payload:
         store.set_payload(record["id"], ticket.payload)
+
+
+def ticket_target_key(record):
+    return (record or {}).get("target") or targets.DEFAULT_KEY
 
 
 def target_for(ticket):
@@ -244,8 +276,8 @@ class Handled:
 
 
 class Intake:
-    VERBS = "escalate|close|release|override|notify|concur|dispute|evidence|status|tally"
-    # A command is the text right after the @mention: "@prove-it-intake dispute R-001 patched build not checked".
+    VERBS = "escalate|close|release|override|notify|concur|dispute|evidence|status|tally|clear-reporter"
+    # A command is the text right after the @mention: "@prove-it-intake dispute R-001 patched_not_checked".
     COMMAND = re.compile(r"[\s:,]*(%s)\b\s*(R-\d{3,})?\s*(.*)" % VERBS, re.I | re.S)
 
     def __init__(self, state, auto_check=False, source="switch", state_dir=None):
@@ -264,10 +296,24 @@ class Intake:
         skeptic = state.get("skeptic", DEFAULTS["skeptic"])
         self.skeptic_names = {n.lower() for n in [skeptic, "Prove It Skeptic"] + list(state.get("skeptic_names") or [])}
         self.lock = threading.RLock()
-        self.intake = None   # anything with .post(body, thread_id=None)
-        self.triage = None
+        self.warned_fallback = False  # one warning per run when `sender` is missing
+        self.intake = None   # the default (PyYAML) intake room: anything with .post(body, thread_id=None)
+        self.triage = None   # the default (PyYAML) triage room
+        # target key -> (intake_room, triage_room). Filled by start() (C3) or by the
+        # library-2 rehearsal; the default PyYAML pair is self.intake / self.triage.
+        self.pairs = {}
+        self._reply = None   # the triage room the current command came from (set per command)
+        self._command_id = None
 
     # -- helpers -------------------------------------------------------------
+    def pair(self, target):
+        """The (intake_room, triage_room) a target's reports and tickets use.
+
+        Defaults to the PyYAML pair, so single-room setups and PyYAML are unchanged.
+        """
+        key = target.key if hasattr(target, "key") else (target or targets.DEFAULT_KEY)
+        return self.pairs.get(key, (self.intake, self.triage))
+
     def mention(self):
         return "@" + self.state["agent_name"]
 
@@ -309,15 +355,93 @@ class Intake:
             sys.exit("#%s has no Switch room link labelled %r, so Intake does not know where to send tickets. "
                      "Deploy switch/prove-it.template.yaml (it creates the link) or run setup with --create-rooms."
                      % (self.state["intake_room"], TRIAGE_LINK_LABEL))
+        if self.state.get("trial") and self.agent.room_id(self.state["triage_room"]) != triage_id:
+            sys.exit("The trial intake links outside its expected triage room; refusing to connect")
         self.triage = self.agent.connect(triage_id, self.on_triage_event, cursors=self.cursors, failed_log=self.failed_log)
         if not self.triage.ready.wait(20):
             sys.exit("Could not open the event stream for room %s" % triage_id)
         log.info("Intake is listening in #%s and the room it links to as %r", self.state["intake_room"], TRIAGE_LINK_LABEL)
+        self.pairs[targets.DEFAULT_KEY] = (self.intake, self.triage)
+        self.start_extra_targets()
+        self.resume_pending()
+        threading.Thread(target=self._retry_pending, name="proveit-delivery", daemon=True).start()
+
+    def _retry_pending(self):
+        while not self.agent._stop.wait(5):
+            self.resume_pending()
+
+    def resume_pending(self):
+        """Recover committed reports/decisions after reconnects and process restarts."""
+        with self.lock:
+            for record in store.all_tickets():
+                if not store.load_private_json(record["id"], "contact.json").get("intake_thread"):
+                    continue  # CLI-only tickets have no reporter to notify
+                try:
+                    with store.ticket_lock(record["id"]):
+                        record = store.load(record["id"])
+                        if record["status"] == "new":
+                            contact = store.load_private_json(record["id"], "contact.json")
+                            self.new_report({"body": store.private_path(record["id"], "report.md").read_text(encoding="utf-8"),
+                                "message_id": contact["message_id"], "sender_name": contact["reporter"]},
+                                targets.for_record(record))
+                            record = store.load(record["id"])
+                        if record.get("intake_delivery"):
+                            self.deliver_report(record)
+                        if record["status"] in states.TERMINAL:
+                            if record.get("decision_effects_pending"):
+                                record = actions.finish_decision(record["id"])
+                            if record.get("notified") is False:
+                                self._reply = self.pair(targets.for_record(record))[1]
+                                self.tell_reporter(record["id"], "", None)
+                except Exception:
+                    log.exception("pending work for %s will be retried", record["id"])
+
+    def start_extra_targets(self):
+        """Also serve any registered non-default target whose rooms exist (U4, C3).
+
+        Each extra room pair's callbacks are bound to its target, so a report's
+        target comes only from the room it arrived in. A target whose intake room
+        is absent is skipped with one warning -- PyYAML keeps working (the live
+        fallback): the sqlparse rooms are deployed from a separate template, so a
+        Console that has only the main template serves PyYAML alone.
+        """
+        for target in targets.TARGETS.values():
+            if target.key == targets.DEFAULT_KEY:
+                continue
+            from .trial import room_names
+            intake_name, triage_name = room_names(self.state, target)
+            extra_intake_id = self.agent.room_id(intake_name)
+            if not extra_intake_id:
+                log.warning("room #%s for target %s not found; not serving it (PyYAML is unaffected). Deploy "
+                            "switch/prove-it.%s.rooms.template.yaml to enable it.",
+                            intake_name, target.key, target.key)
+                continue
+            intake_conn = self.agent.connect(extra_intake_id, functools.partial(self.on_intake_event, target=target),
+                                             cursors=self.cursors, failed_log=self.failed_log)
+            if not intake_conn.ready.wait(20):
+                sys.exit("Could not open the event stream for room %s" % extra_intake_id)
+            extra_triage_id = self.linked_room(intake_conn, TRIAGE_LINK_LABEL)
+            if not extra_triage_id:
+                sys.exit("#%s has no Switch room link labelled %r, so Intake cannot serve target %s."
+                         % (intake_name, TRIAGE_LINK_LABEL, target.key))
+            if target.key in (self.state.get("target_rooms") or {}) and self.agent.room_id(triage_name) != extra_triage_id:
+                sys.exit("#%s links to an unexpected triage room; expected #%s" % (intake_name, triage_name))
+            triage_conn = self.agent.connect(extra_triage_id, functools.partial(self.on_triage_event, target=target),
+                                             cursors=self.cursors, failed_log=self.failed_log)
+            if not triage_conn.ready.wait(20):
+                sys.exit("Could not open the event stream for room %s" % extra_triage_id)
+            self.pairs[target.key] = (intake_conn, triage_conn)
+            log.info("Also serving target %s in #%s and its linked triage room", target.key, intake_name)
 
     # -- #proveit-intake -----------------------------------------------------
-    def on_intake_event(self, conn, kind, frame):
+    def on_intake_event(self, conn, kind, frame, target=None):
+        """A message in an intake room. `target` is the library that room serves
+        (the PyYAML default here; bound per room in start(), and set by the
+        library-2 rehearsal). A report's target comes only from its room, never
+        from the reporter's text."""
         if kind != "message":
             return
+        lib = targets.get(target.key if hasattr(target, "key") else target)
         payload = frame["payload"]
         if self.is_self(payload) or self.is_system(payload) or not payload.get("body", "").strip():
             return
@@ -332,77 +456,165 @@ class Intake:
                     self.followup(record, payload)
                 self.handled.add(payload.get("message_id"))
                 return  # a reply in a thread that is not a report is ignored
-            self.new_report(payload)
+            self.new_report(payload, lib)
             self.handled.add(payload.get("message_id"))
 
-    def new_report(self, payload):
+    def new_report(self, payload, lib=None):
+        lib = lib or targets.PYYAML
+        intake_room, triage_room = self.pair(lib)
         text, thread = payload["body"], payload["message_id"]
-        if store.find_by_thread(thread):
-            # A retry after a failure part-way through: the ticket exists already.
-            log.info("report %s already has a ticket; not creating another", thread)
+        record = store.find_by_thread(thread)
+        if record and record["status"] != "new":
+            with store.ticket_lock(record["id"]):
+                self.deliver_report(store.load(record["id"]))
             return
+        if record:
+            contact = store.load_private_json(record["id"], "contact.json")
+            key, source = contact.get("reporter_key"), contact.get("id_source")
+        else:
+            key, source = self.reporter_key(payload)
+        if not record and key and reputation.is_limited(key):
+            open_ = reputation.open_tickets(key)
+            if open_:
+                # Decision D-018: one open report at a time. The new report's text is not stored anywhere.
+                intake_room.post(messages.limited_reporter(open_), thread)
+                triage_room.post(messages.limited_notice(reputation.short(key), reputation.get(key)["invalid"]))
+                return
         result = screen.screen(text)
-        ticket = reports.parse(text)
-        record = store.create({}, text, source=self.source)
+        ticket = reports.parse(text, lib)
+        if record is None:
+            record = store.create({"target": lib.key}, text, source=self.source, contact={
+                "intake_thread": thread, "reporter": payload.get("sender_name", "unknown"),
+                "message_id": payload.get("message_id"), "reporter_key": key, "id_source": source})
         with store.ticket_lock(record["id"]):
             store.save_private_json(record["id"], "contact.json",
                                     {"intake_thread": thread, "reporter": payload.get("sender_name", "unknown"),
-                                     "message_id": payload.get("message_id")})
-            fill(record, ticket)
+                                     "message_id": payload.get("message_id"), "reporter_key": key, "id_source": source})
+            fill(record, ticket, lib)
+            record["last_intake_message"] = payload.get("message_id")
             if result.blocked:
-                self.quarantine(record, result, thread, "receive")
+                self.quarantine(record, result, thread, "receive", lib)
                 return
-            self.route(record, ticket, thread, "receive")
+            self.route(record, ticket, thread, "receive", lib=lib)
 
-    def quarantine(self, record, result, thread, command):
+    def reporter_key(self, payload):
+        """The reporter's HMAC key and which field it came from, or (None, None) (decision D-018)."""
+        value, source = reputation.identity(payload)
+        if value is None:
+            return None, None
+        if source == "sender_name" and not self.warned_fallback:
+            self.warned_fallback = True
+            log.warning("a reporter's message has no Switch participant id (`sender`); the proof record falls back "
+                        "to the display name (`sender_name`) for this run")
+        return reputation.key_for(value), source
+
+    def count_invalid(self, record):
+        """One strike per ticket at most, for a proof Intake rejected (decision D-018)."""
+        if record.get("counted_invalid"):
+            return
+        contact = store.load_private_json(record["id"], "contact.json")
+        if contact.get("reporter_key"):
+            reputation.add(contact["reporter_key"], contact.get("id_source"), "invalid")
+            record["counted_invalid"] = True
+
+    def quarantine(self, record, result, thread, command, lib=None):
+        lib = lib or targets.for_record(record)
+        intake_room, triage_room = self.pair(lib)
         record["screen_rules"] = sorted({f["rule"] for f in result.findings})
         store.save_private_json(record["id"], "screen.json", result.findings)
+        record["intake_delivery"] = {"status": "quarantined", "reporter": False, "triage": False}
         store.apply(record, command, "intake", "intake", target="quarantined")
-        self.intake.post(messages.quarantined(record["id"]), thread)
-        self.triage.post(messages.quarantine_notice(record, self.mention()))
+        self.deliver_report(record)
 
-    def route(self, record, ticket, thread, command, actor="intake", by="intake"):
-        target = target_for(ticket)
-        store.apply(record, command, actor, by, target=target)
-        if target == "invalid_proof":
-            self.intake.post(messages.invalid_proof(record["id"], ticket.poc_problem), thread)
-        elif target == "awaiting_poc":
-            self.intake.post(messages.ask_for_proof(record["id"], ticket), thread)
-        else:
-            self.intake.post(messages.accepted(record["id"], ticket.claim), thread)
-            self.triage.post(messages.ticket_posted(record))
-            if self.auto_check:
-                threading.Thread(target=self.run_auto_check, args=(record["id"],), daemon=True).start()
+    def route(self, record, ticket, thread, command, actor="intake", by="intake", lib=None):
+        lib = lib or targets.for_record(record)
+        intake_room, triage_room = self.pair(lib)
+        state = target_for(ticket)  # the next ticket state, not the library target
+        if state == "invalid_proof":
+            self.count_invalid(record)  # saved by apply below
+        record["intake_delivery"] = {"status": state, "reporter": False, "triage": state not in ("in_triage", "quarantined")}
+        store.apply(record, command, actor, by, target=state)
+        self.deliver_report(record)
+        if state == "in_triage" and self.auto_check:
+            threading.Thread(target=self.run_auto_check, args=(record["id"],), daemon=True).start()
+
+    def deliver_report(self, record):
+        """Send only unfinished parts of a committed routing operation.
+
+        Receipts are saved after each successful post. An HTTP success followed by
+        a lost response can still duplicate a message: the Switch operation has no
+        idempotency key. This is at-least-once delivery, not exactly-once delivery.
+        """
+        delivery = record.get("intake_delivery")
+        if not delivery or all(delivery.get(k) for k in ("reporter", "triage")):
+            return
+        lib = targets.for_record(record)
+        intake_room, triage_room = self.pair(lib)
+        ticket, thread = ticket_from_record(record), self.reporter_thread(record)
+        state, errors = delivery["status"], []
+        if not delivery["reporter"]:
+            if state == "quarantined":
+                body = messages.quarantined(record["id"])
+            elif state == "invalid_proof":
+                body = messages.invalid_proof(record["id"], ticket.poc_problem, record.get("out_of_scope_entry"), lib)
+            elif state == "awaiting_poc":
+                body = messages.ask_for_proof(record["id"], ticket, lib)
+            else:
+                body = messages.accepted(record["id"], ticket.claim, lib)
+            try:
+                intake_room.post(body, thread)
+                delivery["reporter"] = True
+                store.save(record)
+            except Exception as exc:
+                errors.append(exc)
+        if not delivery["triage"]:
+            try:
+                body = messages.quarantine_notice(record, self.mention()) if state == "quarantined" else messages.ticket_posted(record)
+                triage_room.post(body)
+                delivery["triage"] = True
+                store.save(record)
+            except Exception as exc:
+                errors.append(exc)
+        if errors:
+            raise errors[0]
 
     def followup(self, record, payload):
         with store.ticket_lock(record["id"]):
             self._followup(store.load(record["id"]), payload)
 
     def _followup(self, record, payload):
+        lib = targets.for_record(record)
+        intake_room, _ = self.pair(lib)
         contact = store.load_private_json(record["id"], "contact.json")
         thread = contact.get("intake_thread")
         sender = payload.get("sender_name", "")
         if sender.lower() != str(contact.get("reporter", "")).lower():
             self.foreign_reply(record, payload, thread)
             return
+        if record.get("last_intake_message") == payload.get("message_id"):
+            self.deliver_report(record)
+            return
+        self.deliver_report(record)  # finish an earlier reply before replacing its proof
         if record["status"] not in ("awaiting_poc", "invalid_proof"):
-            self.intake.post("%s is %s. A maintainer will reply in this thread." % (
+            intake_room.post("%s is %s. A maintainer will reply in this thread." % (
                 record["id"], record["status"].replace("_", " ")), thread)
             return
         text = payload["body"]
         store.append_report(record["id"], text)
         result = screen.screen(text)
-        merged = reports.merge(ticket_from_record(record), text)
-        fill(record, merged)
+        merged = reports.merge(ticket_from_record(record), text, lib)
+        fill(record, merged, lib)
+        record["last_intake_message"] = payload.get("message_id")
         if result.blocked:
-            self.quarantine(record, result, thread, "followup")
+            self.quarantine(record, result, thread, "followup", lib)
             return
-        self.route(record, merged, thread, "followup")
+        self.route(record, merged, thread, "followup", lib=lib)
 
     def foreign_reply(self, record, payload, thread):
         """Decision D-008: only the original reporter completes a report. Someone else's reply in the
         thread changes nothing; it is kept privately for maintainers and counted in the ticket."""
         import hashlib
+        intake_room, triage_room = self.pair(targets.for_record(record))
         text = payload.get("body", "")
         foreign = store.load_private_json(record["id"], "foreign.json") or {"replies": []}
         foreign["replies"].append({"sender": payload.get("sender_name", "unknown"), "message_id": payload.get("message_id"),
@@ -414,20 +626,21 @@ class Intake:
             fresh["foreign_replies"] = len(foreign["replies"])
             store.event(fresh, "foreign_reply_ignored", "intake")
             store.save(fresh)
-        self.intake.post(messages.foreign_reply(record["id"]), thread)
-        self.triage.post(messages.foreign_reply_notice(record["id"], len(foreign["replies"])))
+        intake_room.post(messages.foreign_reply(record["id"]), thread)
+        triage_room.post(messages.foreign_reply_notice(record["id"], len(foreign["replies"])))
 
     def run_auto_check(self, ticket_id):
         """Developer/test mode only: Intake runs the vulnerable-build check itself, labelled as such."""
+        triage_room = self.pair(targets.for_record(store.load(ticket_id)))[1]
         try:
             record, run, _ = actions.check(ticket_id, "vulnerable", actor="intake", by="intake (auto-check)")
-            self.triage.post(messages.auto_check(record, run))
+            triage_room.post(messages.auto_check(record, run))
         except Exception as exc:
             log.exception("auto-check failed")
-            self.triage.post("Automatic check for %s failed: %s" % (ticket_id, type(exc).__name__))
+            triage_room.post("Automatic check for %s failed: %s" % (ticket_id, type(exc).__name__))
 
     # -- #proveit-triage -----------------------------------------------------
-    def on_triage_event(self, conn, kind, frame):
+    def on_triage_event(self, conn, kind, frame, target=None):
         if kind != "message":
             return
         payload = frame["payload"]
@@ -439,14 +652,28 @@ class Intake:
         if payload.get("message_id") in self.handled:
             log.info("message %s already handled; ignoring the repeat", payload.get("message_id"))
             return
-        self.handle_command(payload)
+        self.handle_command(payload, target)
         self.handled.add(payload.get("message_id"))
 
     def parse_command(self, body):
-        """The command after any line's @mention of Intake, or None."""
-        for name in sorted(self.names, key=len, reverse=True):
-            for part in re.split(r"@%s\b" % re.escape(name), body, flags=re.I)[1:]:
-                match = self.COMMAND.match(part)
+        """A standalone command after Intake's mention; ignore prose and Markdown examples."""
+        fenced = None
+        for line in (body or "").splitlines():
+            fence = re.match(r"^\s*(`{3,}|~{3,})", line)
+            if fence:
+                marker = fence.group(1)[0]
+                if fenced is None:
+                    fenced = marker
+                elif marker == fenced:
+                    fenced = None
+                continue
+            if fenced is not None or line.startswith(("    ", "\t")):
+                continue
+            for name in sorted(self.names, key=len, reverse=True):
+                mention = re.match(r"^\s*@%s\b(.*)$" % re.escape(name), line, flags=re.I)
+                if not mention:
+                    continue
+                match = self.COMMAND.match(mention.group(1))
                 if match:
                     return match
         return None
@@ -454,54 +681,65 @@ class Intake:
     def is_skeptic(self, payload):
         return self.is_agent(payload) and payload.get("sender_name", "").lstrip("@").lower() in self.skeptic_names
 
-    def handle_command(self, payload):
+    def handle_command(self, payload, cmd_target=None):
         body, thread = payload.get("body", ""), payload.get("thread_id")
         match = self.parse_command(body)
         log.info("triage command from %r (kind %s): %s", payload.get("sender_name"), payload.get("sender_kind"),
                  match.group(1).lower() if match else "none")
         with self.lock:
+            # Replies go to the triage room the command came from. A ticket is found by
+            # id regardless of room, so a maintainer can decide a ticket from either
+            # triage room (humans rule, decision D-022); the reporter is always told in
+            # the ticket's own intake room (tell_reporter).
+            self._reply = self.pair(cmd_target)[1]
+            self._command_id = payload.get("message_id")
             if not match and self.is_agent(payload):
                 return  # never answer an agent's chatter with help text: two agents could loop
             if not match:
-                self.triage.post("Commands: `escalate R-001 [note]`, `close R-001 <reason>`, `override R-001 [note]`, "
-                                 "`release R-001`, `notify R-001`, `evidence R-001`, `status`, `tally`; "
-                                 "from the Skeptic: `concur R-001`, `dispute R-001 <reason>`.", thread)
+                self._reply.post("Commands: `escalate R-001 [note]`, `close R-001 [reason=<code>] <note>`, "
+                                 "`override R-001 [note]`, `release R-001`, `notify R-001`, `clear-reporter <key>`, "
+                                 "`evidence R-001`, `status`, "
+                                 "`tally`; from the Skeptic: `concur R-001`, `dispute R-001 <reason_code> [note]` "
+                                 "(codes: %s)." % reasons.code_list(), thread)
                 return
             verb, ticket_id, rest = match.group(1).lower(), match.group(2), match.group(3).strip()
             human_only = verb in HUMAN_ONLY
             who = payload.get("sender_name", "")
             if verb in VERDICTS and not (self.is_skeptic(payload) or (not self.is_agent(payload) and self.is_maintainer(who))):
                 # Switch tells Intake who sent a message, so only the real Skeptic (or a maintainer) records a verdict.
-                self.triage.post("Refused: only @%s or a maintainer records a verdict (%s), and @%s is neither."
+                self._reply.post("Refused: only @%s or a maintainer records a verdict (%s), and @%s is neither."
                                  % (self.state.get("skeptic", "prove-it-skeptic"), verb, who or "?"), thread)
                 return
             if human_only and self.is_agent(payload):
                 # Only people decide; agents' opinions stay opinions.
-                self.triage.post("Refused: only maintainers can %s a ticket, and that request came from an agent." % verb, thread)
+                self._reply.post("Refused: only maintainers can %s a ticket, and that request came from an agent." % verb, thread)
                 return
             if human_only and not self.is_maintainer(who):
                 # Being in the room is not enough: only the maintainers listed in Intake's settings decide.
                 if self.maintainers:
-                    self.triage.post("Refused: only Prove It's maintainers can %s a ticket, and @%s is not one of them. "
+                    self._reply.post("Refused: only Prove It's maintainers can %s a ticket, and @%s is not one of them. "
                                      "A maintainer can add you on the host: `python -m proveit.intake maintainers add %s`."
                                      % (verb, who or "?", who or "<name>"), thread)
                 else:
-                    self.triage.post("Refused: no maintainers are configured, so nobody can %s yet. On the host run "
+                    self._reply.post("Refused: no maintainers are configured, so nobody can %s yet. On the host run "
                                      "`python -m proveit.intake maintainers add <your Mattermost username>`." % verb, thread)
                 return
             if verb == "status":
-                self.triage.post(self.status_text(), thread)
+                self._reply.post(self.status_text(), thread)
                 return
             if verb == "tally":
-                self.triage.post(actions.tally_text(), thread)
+                self._reply.post(actions.tally_text(), thread)
+                return
+            if verb == "clear-reporter":
+                self.do_clear_reporter(who, rest, thread)
                 return
             if not ticket_id:
-                self.triage.post("Which ticket? For example `%s %s R-001`." % (self.mention(), verb), thread)
+                self._reply.post("Which ticket? For example `%s %s R-001`." % (self.mention(), verb), thread)
                 return
             try:
                 record = store.load(ticket_id)
             except FileNotFoundError:
-                self.triage.post("There is no ticket %s." % ticket_id, thread)
+                self._reply.post("There is no ticket %s." % ticket_id, thread)
                 return
             try:
                 if verb in VERDICTS:
@@ -510,46 +748,86 @@ class Intake:
                 else:
                     getattr(self, "do_" + verb)(record, who, rest, thread)
             except states.IllegalTransition as exc:
-                self.triage.post("Refused %s for %s: %s." % (verb, ticket_id, exc), thread)
+                self._reply.post("Refused %s for %s: %s." % (verb, ticket_id, exc), thread)
+
+    def do_clear_reporter(self, who, rest, thread):
+        """`clear-reporter <hmac12>`: a maintainer lifts a reporter's one-open-report limit (decision D-018)."""
+        try:
+            key, _ = reputation.clear(rest.split()[0] if rest.split() else "")
+        except ValueError as exc:
+            self._reply.post("Refused clear-reporter: %s." % exc, thread)
+            return
+        self._reply.post("Reporter %s: limit lifted by %s (invalid count reset to 0)." % (reputation.short(key), who), thread)
 
     def reporter_thread(self, record):
         return store.load_private_json(record["id"], "contact.json").get("intake_thread")
 
     def do_concur(self, record, who, note, thread, actor="agent"):
-        record = actions.concur(record["id"], actor, who)
-        self.triage.post("%s: %s concurs with the evidence; status %s." % (
+        review, note = self.verdict_review(note, actor)
+        record = actions.concur(record["id"], actor, who, review=review)
+        self._reply.post("%s: %s concurs with the evidence; status %s." % (
             record["id"], who, record["status"].replace("_", " ")), thread)
 
-    def do_dispute(self, record, who, note, thread, actor="agent"):
-        record = actions.dispute(record["id"], note, actor, who)
-        self.triage.post("%s: disputed by %s (%s). Escalation is blocked until a maintainer overrides." % (
-            record["id"], who, record["skeptic"]["reason"]), thread)
+    def do_dispute(self, record, who, rest, thread, actor="agent"):
+        """`dispute R-001 <reason_code> [internal note]` (decision D-013). Nothing here reaches the reporter."""
+        review, rest = self.verdict_review(rest, actor)
+        parts = rest.split(None, 1)
+        code, note = (parts + ["", ""])[:2]
+        record = actions.dispute(record["id"], code, actor, who, note, review=review)
+        self._reply.post(messages.dispute_recorded(record), thread)
+
+    @staticmethod
+    def verdict_review(text, actor):
+        matches = list(re.finditer(r"(?:^|\s)review=([0-9a-f]{16})(?=\s|$)", text or ""))
+        if actor == "agent" and len(matches) != 1:
+            raise states.IllegalTransition("read evidence first and include exactly one review=<token> from that evidence pack")
+        if len(matches) > 1:
+            raise states.IllegalTransition("include exactly one review=<token>")
+        if not matches:
+            return None, text
+        match = matches[0]
+        return match.group(1), (text[:match.start()] + " " + text[match.end():]).strip()
 
     def do_evidence(self, record, who, note, thread):
-        self.triage.post("```\n%s\n```" % evidence.text(evidence.pack(record)), thread)
+        self._reply.post("```\n%s\n```" % evidence.text(evidence.pack(record)), thread)
 
     def do_release(self, record, who, note, thread):
         with store.ticket_lock(record["id"]):
             record = store.load(record["id"])
             ticket = ticket_from_record(record)
             self.route(record, ticket, self.reporter_thread(record), "release", actor="human", by=who)
-        self.triage.post("%s released by %s; it is now %s." % (record["id"], who, store.load(record["id"])["status"].replace("_", " ")), thread)
+        self._reply.post("%s released by %s; it is now %s." % (record["id"], who, store.load(record["id"])["status"].replace("_", " ")), thread)
 
     def do_override(self, record, who, note, thread):
         record = actions.override(record["id"], "human", who, note)
-        what = "the dispute" if record["override"]["after"] == "dispute" else "the missing Skeptic review"
-        self.triage.post("%s: %s overrode %s (recorded); the ticket is %s and can be escalated or closed." % (
-            record["id"], who, what, record["status"].replace("_", " ")), thread)
+        self._reply.post(actions.override_text(record), thread)
 
     def do_escalate(self, record, who, note, thread):
-        record = actions.decide(record["id"], "escalate", "human", who, note)
-        self.triage.post("%s escalated by %s. Telling the reporter." % (record["id"], who), thread)
-        self.tell_reporter(record["id"], actions.clean_reason(note), thread)
+        record = actions.decide(record["id"], "escalate", "human", who, note, request_id=self._command_id)
+        try:
+            self._reply.post("%s escalated by %s. Telling the reporter." % (record["id"], who), thread)
+        finally:
+            if not store.load(record["id"]).get("notified"):
+                self.tell_reporter(record["id"], "", thread)
+        if record.get("advisory_error"):
+            self._reply.post("%s: decision saved; advisory generation failed (%s) and will be retried." % (
+                record["id"], record["advisory_error"]), thread)
+        else:
+            self._reply.post(messages.advisory_note(record["id"]), thread)
 
-    def do_close(self, record, who, note, thread):
-        record = actions.decide(record["id"], "close", "human", who, note)
-        self.triage.post("%s closed by %s. Telling the reporter." % (record["id"], who), thread)
-        self.tell_reporter(record["id"], actions.clean_reason(note), thread)
+    CLOSE_REASON = re.compile(r"^reason=(\S*)\s*(.*)$", re.I | re.S)
+
+    def do_close(self, record, who, rest, thread):
+        """`close R-001 [reason=<code>] <note>`: the code picks the reporter's question (decision D-014)."""
+        match = self.CLOSE_REASON.match(rest)
+        reason, note = (match.group(1), match.group(2)) if match else (None, rest)
+        record = actions.decide(record["id"], "close", "human", who, note, reason=reason, request_id=self._command_id)
+        asked = " with the question for %s" % record["decision_question"] if record.get("decision_question") else ""
+        try:
+            self._reply.post("%s closed by %s. Telling the reporter%s." % (record["id"], who, asked), thread)
+        finally:
+            if not store.load(record["id"]).get("notified"):
+                self.tell_reporter(record["id"], "", thread)
 
     def tell_reporter(self, ticket_id, note, thread):
         """Post the decision in the reporter's thread and record whether it arrived.
@@ -561,14 +839,16 @@ class Intake:
             record = store.load(ticket_id)
             if note:
                 record["decision_note"] = note
+            # Always the ticket's own intake room, even if the command came from the other triage room.
+            reporter_intake = self.pair(targets.for_record(record))[0]
             try:
-                self.intake.post(messages.decision(record, record.get("decision_note", "")), self.reporter_thread(record))
+                reporter_intake.post(messages.decision(record, record.get("decision_note", "")), self.reporter_thread(record))
             except Exception as exc:
                 record["notified"] = False
                 store.event(record, "notify_failed", "intake", error=type(exc).__name__)
                 store.save(record)
                 log.exception("could not tell the reporter about %s", ticket_id)
-                self.triage.post("%s: the decision is recorded, but telling the reporter failed (%s). Resend it with "
+                self._reply.post("%s: the decision is recorded, but telling the reporter failed (%s). Resend it with "
                                  "`%s notify %s`." % (ticket_id, type(exc).__name__, self.mention(), ticket_id), thread)
                 return False
             record["notified"] = True
@@ -582,7 +862,7 @@ class Intake:
                 record["id"], record["status"].replace("_", " ")))
         again = record.get("notified") is True
         if self.tell_reporter(record["id"], "", thread):
-            self.triage.post("%s: the decision was sent to the reporter%s." % (record["id"], " again" if again else ""), thread)
+            self._reply.post("%s: the decision was sent to the reporter%s." % (record["id"], " again" if again else ""), thread)
 
     @staticmethod
     def status_text():
@@ -629,6 +909,7 @@ def cmd_run(args):
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="python -m proveit.intake", description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--trial", help="use only this trial's isolated names, credentials, tickets and private files")
     sub = parser.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("setup", help="register the Intake agent with a Switch server")
     p.add_argument("--env-file", help="the server's .env (default: find Switch Console's local server)")
@@ -653,6 +934,13 @@ def main(argv=None):
                         "when no Reproducer agent is in the room). Not part of the demo flow.")
     p.set_defaults(fn=cmd_run)
     args = parser.parse_args(argv)
+    if args.trial:
+        from .trial import activate
+        global STATE_FILE
+        try:
+            STATE_FILE = Path(activate(args.trial)["state_file"])
+        except ValueError as exc:
+            parser.error(str(exc))
     args.fn(args)
 
 

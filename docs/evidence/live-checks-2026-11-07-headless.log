@@ -1,0 +1,269 @@
+# Prove It live checks against Switch 0.31.0 (headless, scripts/switch-server.sh), 2026-11-07T12:47:01Z
+# Reproducer and Skeptic are scripted Switch protocol agents (stand-ins), not Claude Code or Codex.
+Registered prove-it-intake (maintainers: user) and the two stand-in agents
+Linked the deploying agent's owner (79530563) to Mattermost account 'user', so {$creator} is the maintainer
+PASS template switch/prove-it.rooms.template.yaml deployed by Switch (create_room_from_yaml, unmodified)
+PASS template switch/prove-it.sqlparse.rooms.template.yaml deployed by Switch (create_room_from_yaml, unmodified)
+PASS all four rooms exist
+PASS reporter is not a member of either triage room
+People: maintainer 'user' (listed in Intake's maintainers), reporter 'reporter-7f655b' (a separate account, not listed)
+PASS Intake serves the PyYAML and sqlparse room pairs
+
+== A. Items 2 and 3: real CVE-2020-14343 (PyYAML)
+  [REPORTER in #proveit-intake] posted 01-real-cve-2020-14343.md
+PASS 01 became a ticket in triage
+  [reproducer stand-in, from agents/reproducer, no PYTHONPATH] $ python -m proveit check R-001 -> exit 0
+      R-001 vulnerable build: CODE_EXECUTION on PyYAML 5.3.1, 3/3 clean runs (image sha256:ee763e992953...)
+        - vulnerable on PyYAML 5.3.1 via full_load: CODE_EXECUTION, 3/3 clean runs (image sha256:ee763e992953...); the marker file appeared, so the library ran the payload as code; library frames: constructor.py:make_python_instance < constructor.py:construct_python_object_apply < constructor.py:construct_python_object_new; 0.118 s, 15.0 MB peak
+      ticket status: reproduced
+      note: the patched build has not been checked yet
+      evidence: work/R-001/runs/01-vulnerable.json
+PASS R-001 reproduced on the vulnerable build (3/3)
+  [skeptic stand-in, from agents/skeptic, no PYTHONPATH] $ python -m proveit evidence R-001 -> exit 0
+      Evidence pack R-001 (status: reproduced)
+      claim code_execution | claimed severity critical | entry point full_load | payload sha256 75ce42a97f62f51b (171 bytes)
+      tags: !!python/object/new:tuple, !!python/object/new:map, !!python/name:eval
+      affected version: reported before 5.4, tested 5.3.1
+      - vulnerable on PyYAML 5.3.1 via full_load: CODE_EXECUTION, 3/3 clean runs (image sha256:ee763e992953...); the marker file appeared, so the library ran the payload as code; 0.118 s, 15.0 MB peak
+      - patched build: not run yet
+      checklist:
+        entry_point_allowlisted            True
+        vulnerable_entry_point             full_load
+        vulnerable_outcome                 CODE_EXECUTION
+        vulnerable_clean_runs              3/3 clean runs
+        vulnerable_runs_agree              True
+        outcome_matches_claim              True
+        library_frames_recorded            True
+PASS item 1 mechanism: Skeptic reads R-001's evidence from its folder with no environment
+  [prove-it-skeptic stand-in in #proveit-triage] @prove-it-intake dispute R-001 not_reproduced review=fc2284e2dd86d8bd
+PASS a dispute code the evidence contradicts is refused: Refused dispute for R-001: not_reproduced contradicts the recorded evidence (the vulnerable build recorded CODE_EXECUTION, 3/3 clean runs).
+  [prove-it-skeptic stand-in in #proveit-triage] @prove-it-intake dispute R-001 patched_not_checked review=fc2284e2dd86d8bd
+PASS a valid reason-coded dispute is recorded
+  [maintainer in #proveit-triage] @prove-it-intake escalate R-001
+PASS escalate is refused while disputed
+  [reproducer stand-in, from agents/reproducer, no PYTHONPATH] $ python -m proveit check R-001 --build patched -> exit 0
+      R-001 patched build: NOT_REPRODUCED on PyYAML 5.4, 3/3 clean runs (image sha256:871772b3a774...)
+        - patched on PyYAML 5.4 via full_load: NOT_REPRODUCED, 3/3 clean runs (image sha256:871772b3a774...); the library call finished without code execution, crash or resource exhaustion; raised ConstructorError (message sha256 5c5d1727eb22...); 0.067 s, 14.2 MB peak
+      ticket status: disputed
+      evidence: work/R-001/runs/02-patched.json
+  [maintainer in #proveit-triage] @prove-it-intake override R-001 patched build checked: fixed in 5.4
+  [maintainer in #proveit-triage] @prove-it-intake escalate R-001 confirmed, CVE-2020-14343
+PASS R-001 escalated
+PASS triage shows the DRAFT advisory note
+PASS advisory files exist in the work folder: ghsa-draft.md, osv-draft.json, timeline.json, timeline.md
+PASS advisory pack holds no payload and no reporter prose
+  osv-draft.json: id=x_DRAFT-PROVEIT-R-001, affected=[{"package": {"ecosystem": "PyPI", "name": "PyYAML"}, "versions": ["5.3.1"]}]
+PASS reporter told in their thread
+
+== B. Items 2, 4 and 6: slop reports, the reporter's question, the reporter limit
+  [REPORTER in #proveit-intake] posted 02-slop-safe-load-rce.md
+  [REPORTER in #proveit-intake] posted 02-slop-safe-load-rce.followup.md in its thread
+PASS 02 reached triage after its proof
+  [reproducer stand-in, from agents/reproducer, no PYTHONPATH] $ python -m proveit check R-002 -> exit 0
+      R-002 vulnerable build: NOT_REPRODUCED on PyYAML 5.3.1, 3/3 clean runs (image sha256:ee763e992953...)
+        - vulnerable on PyYAML 5.3.1 via safe_load: NOT_REPRODUCED, 3/3 clean runs (image sha256:ee763e992953...); the library call finished without code execution, crash or resource exhaustion; raised ConstructorError (message sha256 eba075bb50c2...); 0.068 s, 14.1 MB peak
+      ticket status: not_reproduced
+      evidence: work/R-002/runs/01-vulnerable.json
+PASS R-002 not reproduced
+  [skeptic stand-in, from agents/skeptic, no PYTHONPATH] $ python -m proveit evidence R-002 -> exit 0
+      Evidence pack R-002 (status: not_reproduced)
+      claim code_execution | claimed severity critical | entry point safe_load | payload sha256 8be386043b8b2694 (62 bytes)
+      tags: !!python/object/apply:os.system
+      affected version: reported 5.3.1, tested 5.3.1
+      - vulnerable on PyYAML 5.3.1 via safe_load: NOT_REPRODUCED, 3/3 clean runs (image sha256:ee763e992953...); the library call finished without code execution, crash or resource exhaustion; raised ConstructorError (message sha256 eba075bb50c2...); 0.068 s, 14.1 MB peak
+      - patched build: not run yet
+      checklist:
+        entry_point_allowlisted            True
+        vulnerable_entry_point             safe_load
+        vulnerable_outcome                 NOT_REPRODUCED
+        vulnerable_clean_runs              3/3 clean runs
+        vulnerable_runs_agree              True
+        outcome_matches_claim              False
+        library_frames_recorded            True
+PASS item 1 mechanism: Skeptic reads R-002's evidence from its folder with no environment
+  [prove-it-skeptic stand-in in #proveit-triage] @prove-it-intake concur R-002 review=47cfd8b41be21ab8
+PASS a concur with a current review token is recorded
+  [maintainer in #proveit-triage] @prove-it-intake close R-002 reason=not_reproduced safe_load refused the tag
+PASS the reporter gets the fixed question for reason=not_reproduced: The sandbox did not reproduce this on PyYAML 5.3.1. Which exact input and entry point trigger it?
+  [REPORTER in #proveit-intake] posted 03-slop-billion-laughs.md
+  [reproducer stand-in, from agents/reproducer, no PYTHONPATH] $ python -m proveit check R-003 -> exit 0
+      R-003 vulnerable build: NOT_REPRODUCED on PyYAML 5.3.1, 3/3 clean runs (image sha256:ee763e992953...)
+        - vulnerable on PyYAML 5.3.1 via safe_load: NOT_REPRODUCED, 3/3 clean runs (image sha256:ee763e992953...); the library call finished without code execution, crash or resource exhaustion; 0.119 s, 14.0 MB peak
+      ticket status: not_reproduced
+      evidence: work/R-003/runs/01-vulnerable.json
+  [skeptic stand-in, from agents/skeptic, no PYTHONPATH] $ python -m proveit evidence R-003 -> exit 0
+      Evidence pack R-003 (status: not_reproduced)
+      claim denial_of_service | claimed severity high | entry point safe_load | payload sha256 e77a3f7fb73b0d6c (377 bytes)
+      tags: none
+      affected version: reported 5.3.1, tested 5.3.1
+      - vulnerable on PyYAML 5.3.1 via safe_load: NOT_REPRODUCED, 3/3 clean runs (image sha256:ee763e992953...); the library call finished without code execution, crash or resource exhaustion; 0.119 s, 14.0 MB peak
+      - patched build: not run yet
+      checklist:
+        entry_point_allowlisted            True
+        vulnerable_entry_point             safe_load
+        vulnerable_outcome                 NOT_REPRODUCED
+        vulnerable_clean_runs              3/3 clean runs
+        vulnerable_runs_agree              True
+        outcome_matches_claim              False
+        library_frames_recorded            False
+PASS item 1 mechanism: Skeptic reads R-003's evidence from its folder with no environment
+  [prove-it-skeptic stand-in in #proveit-triage] @prove-it-intake concur R-003 review=e5dab5707eb56dac
+  [maintainer in #proveit-triage] @prove-it-intake close R-003 no exhaustion in 3 clean runs
+PASS R-003 closed
+  [REPORTER in #proveit-intake] posted 01-real-cve-2020-14343.md
+PASS with no open report the reporter can still file one (R-004)
+  [REPORTER in #proveit-intake] posted 03-slop-billion-laughs.md
+PASS after two failed proofs a second open report is refused: Reporter 39d1d3814e8f is limited to one open report (2 proofs did not reproduce). A maintainer can lift it with: python -m proveit clear-reporter 39d1d3814e8f
+  proof record identity source used by Switch 0.31.0 for human messages: sender
+  (negative probe: the reporter account is added to #proveit-triage to try maintainer commands)
+  [REPORTER in #proveit-triage] @prove-it-intake clear-reporter 39d1d3814e8f
+  [REPORTER in #proveit-triage] @prove-it-intake close R-004 not a bug
+  [REPORTER in #proveit-triage] @prove-it-intake escalate R-004
+PASS reporter account's clear-reporter / close / escalate are refused
+  [maintainer in #proveit-triage] @prove-it-intake clear-reporter 39d1d3814e8f
+PASS a maintainer lifts the limit
+  [REPORTER in #proveit-intake] posted 03-slop-billion-laughs.md
+PASS after clear-reporter the reporter can file again
+
+== C. Item 5: sqlparse CVE-2023-30608 in #sqlparse-intake / #sqlparse-triage
+  [REPORTER in #sqlparse-intake] posted 101-real-cve-2023-30608.md
+PASS the sqlparse report became a sqlparse ticket in #sqlparse-triage
+  [reproducer stand-in, from agents/reproducer, no PYTHONPATH] $ python -m proveit check R-006 -> exit 0
+      R-006 vulnerable build: RESOURCE_EXHAUSTION on sqlparse 0.4.3, 3/3 clean runs (image sha256:f42b4e446793...)
+        - vulnerable on sqlparse 0.4.3 via parse: RESOURCE_EXHAUSTION, 3/3 clean runs (image sha256:f42b4e446793...); the library call ran past the 10 s limit, busy on the CPU; 10.008 s, 14.1 MB peak
+      ticket status: reproduced
+      note: the patched build has not been checked yet
+      note: the claimed severity is higher than this outcome supports
+      evidence: work/R-006/runs/01-vulnerable.json
+PASS sqlparse 0.4.3: RESOURCE_EXHAUSTION: the library call ran past the 10 s limit, busy on the CPU
+  [reproducer stand-in, from agents/reproducer, no PYTHONPATH] $ python -m proveit check R-006 --build patched -> exit 0
+      R-006 patched build: NOT_REPRODUCED on sqlparse 0.4.4, 3/3 clean runs (image sha256:a9fb30744138...)
+        - patched on sqlparse 0.4.4 via parse: NOT_REPRODUCED, 3/3 clean runs (image sha256:a9fb30744138...); the library call finished without code execution, crash or resource exhaustion; 0.070 s, 14.4 MB peak
+      ticket status: reproduced
+      note: the claimed severity is higher than this outcome supports
+      evidence: work/R-006/runs/02-patched.json
+PASS sqlparse 0.4.4: NOT_REPRODUCED
+  [skeptic stand-in, from agents/skeptic, no PYTHONPATH] $ python -m proveit evidence R-006 -> exit 0
+      Evidence pack R-006 (status: reproduced)
+      claim denial_of_service | claimed severity high | entry point parse | payload sha256 5bbd4e474a2414a5 (44 bytes)
+      tags: none
+      affected version: reported 0.4.3, tested 0.4.3
+      - vulnerable on sqlparse 0.4.3 via parse: RESOURCE_EXHAUSTION, 3/3 clean runs (image sha256:f42b4e446793...); the library call ran past the 10 s limit, busy on the CPU; 10.008 s, 14.1 MB peak
+      - patched on sqlparse 0.4.4 via parse: NOT_REPRODUCED, 3/3 clean runs (image sha256:a9fb30744138...); the library call finished without code execution, crash or resource exhaustion; 0.070 s, 14.4 MB peak
+      checklist:
+        entry_point_allowlisted            True
+        vulnerable_entry_point             parse
+        vulnerable_outcome                 RESOURCE_EXHAUSTION
+        vulnerable_clean_runs              3/3 clean runs
+        vulnerable_runs_agree              True
+        outcome_matches_claim              True
+        library_frames_recorded            False
+PASS item 1 mechanism: Skeptic reads R-006's evidence from its folder with no environment
+  [prove-it-skeptic stand-in in #sqlparse-triage] @prove-it-intake concur R-006 review=b51bc8afe3898246
+PASS the Skeptic's review is recorded from #sqlparse-triage
+  [maintainer in #sqlparse-triage] @prove-it-intake escalate R-006 confirmed, CVE-2023-30608
+PASS R-006 escalated with its advisory note in #sqlparse-triage
+PASS the sqlparse reporter is told in their thread
+
+== Transcript: #proveit-triage
+  | admin joined the channel.
+  | user added to the channel by admin.
+  | prove-it-intake added to the channel by admin.
+  | prove-it-reproducer added to the channel by admin.
+  | prove-it-skeptic added to the channel by admin.
+  | Hey! Ping @prove-it-intake and I'll jump in.
+  | Hi there! Just @prove-it-reproducer me when you're ready.
+  | Hello! I'm ready — just tag @prove-it-skeptic when you need me.
+  | switch-admin added to the channel by admin.
+  | Kickoff from prove-it-intake, Agent Bootstrap's agent
+  | @prove-it-reproducer @prove-it-skeptic this is the triage room. In one
+  | line each, say what you will do when a maintainer asks you about a
+  | ticket.
+  | 
+  | @prove-it-intake I'm currently offline — my connector isn't reporting in. I'll respond once it reconnects.
+  | @prove-it-intake I'm currently offline — my connector isn't reporting in. I'll respond once it reconnects.
+  | **Ticket R-001** · claim `code_execution` · claimed severity `critical` · entry point `full_load` · payload sha256 `75ce42a97f62f51b` (171 bytes) · tags `!!python/object/new:tuple, !!python/object/new:map, !!python/name:eval` · reported: before 5.4, tested: 5.3.1
+  | The payload is data and only runs inside the sandbox. Nothing the reporter wrote is in this ticket.
+  | 
+  | Next: a maintainer asks the Reproducer to run `python -m proveit check R-001` (vulnerable build). The patched build runs only when someone asks: `check R-001 --build patched`.
+  | The Skeptic then reviews it. Maintainers decide with `escalate R-001` (needs a current concur, or an `override`), `close R-001 <reason>` or `ov
+  | @prove-it-intake dispute R-001 not_reproduced review=fc2284e2dd86d8bd
+  | Refused dispute for R-001: not_reproduced contradicts the recorded evidence (the vulnerable build recorded CODE_EXECUTION, 3/3 clean runs).
+  | @prove-it-intake dispute R-001 patched_not_checked review=fc2284e2dd86d8bd
+  | R-001: disputed by prove-it-skeptic (patched_not_checked: the patched build has not been checked). Escalation is blocked until a maintainer overrides. Note for maintainers: ask the Reproducer to run `check R-001 --build patched`.
+  | @prove-it-intake escalate R-001
+  | Refused escalate for R-001: cannot escalate a ticket that is disputed; the Skeptic disputed it, so a maintainer must run override first.
+  | @prove-it-intake override R-001 patched build checked: fixed in 5.4
+  | R-001: user overrode the dispute (patched_not_checked); it can now be escalated or closed.
+  | @prove-it-intake escalate R-001 confirmed, CVE-2020-14343
+  | R-001 escalated by user. Telling the reporter.
+  | Advisory pack for R-001 (DRAFT, needs maintainer review): work/R-001/advisory/ osv-draft.json, ghsa-draft.md, timeline.md
+  | **Ticket R-002** · claim `code_execution` · claimed severity `critical` · entry point `safe_load` · payload sha256 `8be386043b8b2694` (62 bytes) · tags `!!python/object/apply:os.system` · reported version 5.3.1, tested 5.3.1
+  | The payload is data and only runs inside the sandbox. Nothing the reporter wrote is in this ticket.
+  | 
+  | Next: a maintainer asks the Reproducer to run `python -m proveit check R-002` (vulnerable build). The patched build runs only when someone asks: `check R-002 --build patched`.
+  | The Skeptic then reviews it. Maintainers decide with `escalate R-002` (needs a current concur, or an `override`), `close R-002 <reason>` or `override R-002`, addressed to Intake.
+  | @prove-it-intake concur R-002 review=47cfd8b41be21ab8
+  | R-002: prove-it-skeptic concurs with the evidence; status not reproduced.
+  | @prove-it-intake close R-002 reason=not_reproduced safe_load refused the tag
+  | R-002 closed by user. Telling the reporter with the question for not_reproduced.
+  | **Ticket R-003** · claim `denial_of_service` · claimed severity `high` · entry point `safe_load` · payload sha256 `e77a3f7fb73b0d6c` (377 bytes) · tags `none` · reported version 5.3.1, tested 5.3.1
+  | The payload is data and only runs inside the sandbox. Nothing the reporter wrote is in this ticket.
+  | 
+  | Next: a maintainer asks the Reproducer to run `python -m proveit check R-003` (vulnerable build). The patched build runs only when someone asks: `check R-003 --build patched`.
+  | The Skeptic then reviews it. Maintainers decide with `escalate R-003` (needs a current concur, or an `override`), `close R-003 <reason>` or `override R-003`, addressed to Intake.
+  | @prove-it-intake concur R-003 review=e5dab5707eb56dac
+  | R-003: prove-it-skeptic concurs with the evidence; status not reproduced.
+  | @prove-it-intake close R-003 no exhaustion in 3 clean runs
+  | R-003 closed by user. Telling the reporter with the question for not_reproduced.
+  | **Ticket R-004** · claim `code_execution` · claimed severity `critical` · entry point `full_load` · payload sha256 `75ce42a97f62f51b` (171 bytes) · tags `!!python/object/new:tuple, !!python/object/new:map, !!python/name:eval` · reported: before 5.4, tested: 5.3.1
+  | The payload is data and only runs inside the sandbox. Nothing the reporter wrote is in this ticket.
+  | 
+  | Next: a maintainer asks the Reproducer to run `python -m proveit check R-004` (vulnerable build). The patched build runs only when someone asks: `check R-004 --build patched`.
+  | The Skeptic then reviews it. Maintainers decide with `escalate R-004` (needs a current concur, or an `override`), `close R-004 <reason>` or `ov
+  | Reporter 39d1d3814e8f is limited to one open report (2 proofs did not reproduce). A maintainer can lift it with: python -m proveit clear-reporter 39d1d3814e8f
+  | reporter-7f655b added to the channel by admin.
+  | @prove-it-intake clear-reporter 39d1d3814e8f
+  | @prove-it-intake close R-004 not a bug
+  | @prove-it-intake escalate R-004
+  | Refused: only Prove It's maintainers can clear-reporter a ticket, and @reporter-7f655b is not one of them. A maintainer can add you on the host: `python -m proveit.intake maintainers add reporter-7f655b`.
+  | Refused: only Prove It's maintainers can close a ticket, and @reporter-7f655b is not one of them. A maintainer can add you on the host: `python -m proveit.intake maintainers add reporter-7f655b`.
+  | Refused: only Prove It's maintainers can escalate a ticket, and @reporter-7f655b is not one of them. A maintainer can add you on the host: `python -m proveit.intake maintainers add reporter-7f655b`.
+  | @prove-it-intake clear-reporter 39d1d3814e8f
+  | Reporter 39d1d3814e8f: limit lifted by user (invalid count reset to 0).
+  | **Ticket R-005** · claim `denial_of_service` · claimed severity `high` · entry point `safe_load` · payload sha256 `e77a3f7fb73b0d6c` (377 bytes) · tags `none` · reported version 5.3.1, tested 5.3.1
+  | The payload is data and only runs inside the sandbox. Nothing the reporter wrote is in this ticket.
+  | 
+  | Next: a maintainer asks the Reproducer to run `python -m proveit check R-005` (vulnerable build). The patched build runs only when someone asks: `check R-005 --build patched`.
+  | The Skeptic then reviews it. Maintainers decide with `escalate R-005` (needs a current concur, or an `override`), `close R-005 <reason>` or `override R-005`, addressed to Intake.
+
+== Transcript: #sqlparse-triage
+  | admin joined the channel.
+  | user added to the channel by admin.
+  | prove-it-intake added to the channel by admin.
+  | prove-it-reproducer added to the channel by admin.
+  | prove-it-skeptic added to the channel by admin.
+  | Hey there! Tag @prove-it-intake if you need me.
+  | Hey! Ping @prove-it-reproducer and I'll jump in.
+  | Hey there! Tag @prove-it-skeptic if you need me.
+  | switch-admin added to the channel by admin.
+  | Kickoff from prove-it-intake, Agent Bootstrap's agent
+  | @prove-it-reproducer @prove-it-skeptic this is the sqlparse triage room. In
+  | one line each, say what you will do when a maintainer asks you about a
+  | ticket.
+  | 
+  | @prove-it-intake I'm currently offline — my connector isn't reporting in. I'll respond once it reconnects.
+  | @prove-it-intake I'm currently offline — my connector isn't reporting in. I'll respond once it reconnects.
+  | **Ticket R-006** · claim `denial_of_service` · claimed severity `high` · entry point `parse` · payload sha256 `5bbd4e474a2414a5` (44 bytes) · tags `none` · reported version 0.4.3, tested 0.4.3
+  | The payload is data and only runs inside the sandbox. Nothing the reporter wrote is in this ticket.
+  | 
+  | Next: a maintainer asks the Reproducer to run `python -m proveit check R-006` (vulnerable build). The patched build runs only when someone asks: `check R-006 --build patched`.
+  | The Skeptic then reviews it. Maintainers decide with `escalate R-006` (needs a current concur, or an `override`), `close R-006 <reason>` or `override R-006`, addressed to Intake.
+  | @prove-it-intake concur R-006 review=b51bc8afe3898246
+  | R-006: prove-it-skeptic concurs with the evidence; status reproduced.
+  | @prove-it-intake escalate R-006 confirmed, CVE-2023-30608
+  | R-006 escalated by user. Telling the reporter.
+  | Advisory pack for R-006 (DRAFT, needs maintainer review): work/R-006/advisory/ osv-draft.json, ghsa-draft.md, timeline.md
+
+35 checks, 35 passed, 0 failed
+LIVE CHECKS PASSED

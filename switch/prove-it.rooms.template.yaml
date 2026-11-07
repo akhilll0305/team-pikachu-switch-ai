@@ -43,13 +43,13 @@ rooms:
          runs `python -m proveit check <id>` (vulnerable build only) and
          explains the evidence.
       2. @prove-it-skeptic reads `python -m proveit evidence <id>`, works
-         through its checklist, and ends with `@prove-it-intake concur <id>`
-         or `@prove-it-intake dispute <id> <reason>`, which Intake records.
+         through its checklist, and ends with `@prove-it-intake concur <id> review=<token>`
+         or `@prove-it-intake dispute <id> <reason_code> review=<token> [note]`, which Intake records.
       3. A maintainer may steer: ask the Reproducer for the patched build
          (`check <id> --build patched`), another allowlisted loader, or the
          evidence pack.
       4. A maintainer decides, addressed to Intake: `escalate <id> [note]`
-         (needs a current concur, or an override), `close <id> <reason>`, or
+         (needs a current concur, or an override), `close <id> [reason=<code>] <note>`, or
          `override <id> [note]`. Only the maintainers listed in Intake's
          settings may decide. Intake tells the reporter in their thread.
 
@@ -75,6 +75,21 @@ rooms:
           check runs PyYAML 5.3.1 (vulnerable); the patched 5.4 runs only when
           someone asks. A result that reproduces on both builds is flagged as
           a possible new issue for a human.
+      - name: scope-policy
+        description: What counts as a PyYAML vulnerability here (docs/policy/pyyaml-scope.md)
+        instructions: Use the out_of_scope_api reason code for a report outside this scope.
+        content: |
+          Threat model: an application loads YAML it did not write through a
+          PyYAML entry point; the attacker controls only that YAML document.
+          In scope: safe_load, full_load, and load with SafeLoader or
+          FullLoader. full_load is in scope because it is documented as
+          avoiding code execution (CVE-2020-14343 is a case where it did not).
+          Out of scope: unsafe_load, unsafe_load_all, load with UnsafeLoader or
+          Loader, and any loader PyYAML documents as unsafe for untrusted
+          input; also proofs that need network access, other files,
+          environment variables, or code instead of data. Intake already
+          refuses out-of-scope entry points before the sandbox; dispute with
+          out_of_scope_api if a report's claim still depends on one.
     kickoff: |
       @prove-it-reproducer @prove-it-skeptic this is the triage room. In one
       line each, say what you will do when a maintainer asks you about a

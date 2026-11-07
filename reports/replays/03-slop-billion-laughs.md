@@ -2,6 +2,7 @@ Title: Denial of service via memory exhaustion (billion laughs) in yaml.safe_loa
 Reporter: replay, synthetic
 Source: synthetic, modelled on the patterns in curl's publicly disclosed AI slop reports (https://gist.github.com/bagder/07f7581f6e3d78ef37dfbfc81fd1d1cd). Not a real report.
 Severity: high
+Affected version: 5.3.1
 Entry point: yaml.safe_load
 Claimed impact: denial of service, memory exhaustion of the host process
 
@@ -30,3 +31,6 @@ j: &j [*i,*i,*i,*i,*i,*i,*i,*i,*i]
 ## Expected result
 
 The process consumes gigabytes of memory and is killed.
+
+Expected: safe_load returns the nested lists quickly
+Actual: the process runs out of memory

@@ -25,6 +25,26 @@ _PY_LINE = re.compile(r"^\s*(import\s+\w|from\s+[\w.]+\s+import\s|def\s+\w+\s*\(
                       r"if\s+__name__\s*==|with\s+open\s*\(|exec\s*\(|eval\s*\()", re.M)
 
 
+# The out-of-scope entry points by their canonical names (docs/policy/pyyaml-scope.md). A message
+# names one of these, never what the reporter wrote.
+OUT_OF_SCOPE_NAMES = ("yaml.unsafe_load_all", "yaml.unsafe_load", "yaml.load with Loader=yaml.UnsafeLoader",
+                      "yaml.load with Loader=yaml.Loader")
+
+
+def out_of_scope_name(text):
+    """The canonical name of the out-of-scope entry point in `text`, or None if it names none."""
+    s = (text or "").strip().strip("`").strip()
+    if re.search(r"unsafe_load_all", s, re.I):
+        return "yaml.unsafe_load_all"
+    if re.search(r"unsafe_load", s, re.I):
+        return "yaml.unsafe_load"
+    if re.search(r"UnsafeLoader", s, re.I):
+        return "yaml.load with Loader=yaml.UnsafeLoader"
+    if re.search(r"Loader\s*=\s*(yaml\.)?Loader\b", s) or re.search(r"\bwith\s+(yaml\.)?Loader\b(?!\s*=)", s):
+        return "yaml.load with Loader=yaml.Loader"
+    return None
+
+
 def parse_entry_point(text):
     """Map what a reporter wrote ("yaml.full_load", "yaml.load(..., Loader=yaml.FullLoader)")
     to an allowlisted key, or return (None, problem)."""
@@ -55,12 +75,18 @@ def looks_like_python(payload):
     return bool(_PY_LINE.search(payload or ""))
 
 
-def validate(entry_point, payload):
-    """Return a problem code from PROBLEMS, or None if the proof may run."""
-    if entry_point not in ENTRY_POINTS:
+def validate(entry_point, payload, entry_points=None, max_bytes=None):
+    """Return a problem code from PROBLEMS, or None if the proof may run.
+
+    `entry_points` and `max_bytes` default to PyYAML's; a target passes its own
+    (targets.Target.validate), so the same checks serve every library.
+    """
+    entry_points = ENTRY_POINTS if entry_points is None else entry_points
+    max_bytes = PAYLOAD_MAX_BYTES if max_bytes is None else max_bytes
+    if entry_point not in entry_points:
         return "unknown_entry_point" if entry_point else "no_entry_point"
     if isinstance(payload, bytes):
-        if len(payload) > PAYLOAD_MAX_BYTES:
+        if len(payload) > max_bytes:
             return "too_large"
         try:
             payload = payload.decode("utf-8")
@@ -72,7 +98,7 @@ def validate(entry_point, payload):
         size = len(payload.encode("utf-8"))
     except UnicodeEncodeError:
         return "not_utf8"
-    if size > PAYLOAD_MAX_BYTES:
+    if size > max_bytes:
         return "too_large"
     if looks_like_python(payload):
         return "python_code"

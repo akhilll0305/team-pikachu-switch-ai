@@ -1,0 +1,35 @@
+Isolated trial preparation, feat/second-library, Windows, 2026-11-07
+Base commit: 11824ef
+No live agent behavior is claimed by these offline checks.
+
+Full suite: Python 3.13, jsonschema 4.26.0, both Docker target images present.
+PROVEIT_REQUIRE_DOCKER=1 PROVEIT_REQUIRE_SQLPARSE=1
+python -X utf8 -B -m unittest discover -s tests -v
+Ran 318 tests in 140.984s
+OK (skipped=11)
+Skips: six Unix-only harness checks, two POSIX permissions checks,
+three Codex OS-sandbox checks unavailable on Windows. OSV schema passed.
+
+python -X utf8 -B scripts/rehearse.py --twice
+OUTCOMES digest run 1: d7ad7ae2c8b6294c
+OUTCOMES digest run 2: d7ad7ae2c8b6294c
+REHEARSAL PASSED (both runs identical)
+
+python -X utf8 -B scripts/rehearse.py --second-target --twice
+OUTCOMES digest run 1: c34d857c31d97fb6
+OUTCOMES digest run 2: c34d857c31d97fb6
+REHEARSAL PASSED (both runs identical)
+
+git diff c78f1ff -- target/: empty; pinned harness guard passed.
+No build, retag or image removal was performed.
+proveit-target:vulnerable sha256:d8219ba0f7880c198c55d6d99afbf332f9310f2256dd7493f39a3a654b5725b6
+proveit-target:patched sha256:00125fc0958b8f2a6c763fba02aff1c8dc87f9fbd9f6cd1cab567ae6a3a32ec3
+proveit-target-sqlparse:vulnerable sha256:223e1f6d958078a4f520c31a86bc11c91654fc1226faedfa03067ec92b919bf0
+proveit-target-sqlparse:patched sha256:e597bc2dcbc4cfa15ef5d02609a71a3b8368f4db68fb89556a959a5e282e882e
+
+New isolation coverage: tests/test_trial.py (12 tests).
+Existing demo server answered a read-only room-list request; only the
+existing proveit-intake/proveit-triage pair was present for its Intake.
+No agent registration, template deployment, room mutation or provider
+permission change was performed as part of this preparation commit.
+Next: deploy only the generated isolated trial and verify real agents.

@@ -1,0 +1,35 @@
+Isolated live trial preflight, feat/second-library at e3f5112, 2026-11-07
+Local Switch Gateway API on Windows; existing demo left in place.
+
+Prerequisite: 318 tests OK (skipped=11), both rehearsals identical twice.
+See trial-isolation-2026-11-07-windows.log for full verification summary.
+
+python -m proveit.trial review
+Prepared ignored .proveit-trials/review/; existing source files unchanged.
+python -m proveit.intake --trial review setup --maintainers user,admin
+Registered review-prove-it-intake without overwrite. Credentials saved
+outside the checkout in its trial-specific state directory. No secret values
+are included here.
+
+POST /gateway/templates/validate, generated template content:
+prove-it.rooms.template.yaml: ok=true blocked=false errors=[] warnings=[]
+prove-it.sqlparse.rooms.template.yaml: ok=true blocked=false errors=[] warnings=[]
+prove-it.template.yaml: ok=true blocked=false errors=[] warnings=[]
+
+GET /gateway/management/controllers, preflight observation:
+Codex 0.167.0: installed=true, auth=ok.
+Claude Code 2.1.319: installed=true, auth=missing,
+reason=provider_login_missing. The controller's test prompt failed.
+Provider account details are intentionally omitted.
+
+Existing managed Reproducer and Skeptic still use the main checkout's
+agents/reproducer and agents/skeptic directories, auto_approve=false.
+Their configuration, membership and instructions were not changed.
+
+RESULT: STOPPED BEFORE TRIAL AGENT/ROOM DEPLOYMENT.
+The new trial Intake is registered but is not serving any rooms.
+No live LLM results, permission-probe results or cross-room results are claimed.
+Next: restore Claude Code access on the execution machine and recheck its
+provider status. Deploy only the generated trial after that preflight passes.
+The tested preparation commit does not require rollback for a provider-access
+failure; a future code regression will be reverted on feat/second-library.

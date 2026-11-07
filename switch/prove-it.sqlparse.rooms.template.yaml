@@ -1,0 +1,102 @@
+# Prove It, the sqlparse room pair (U4, the second target). SEPARATE from the
+# main template on purpose: redeploying switch/prove-it.template.yaml must not
+# create these rooms. Deploy this only when you want the sqlparse rooms, and
+# only after prove-it-reproducer and prove-it-skeptic already exist (created by
+# switch/prove-it.template.yaml). VERIFIED OFFLINE, NOT YET DEPLOYED.
+#
+# The same two agents join #sqlparse-triage. Their standing instructions are
+# target-neutral; this room supplies the sqlparse verdict rules and scope policy.
+version: 1
+
+params:
+  bridge:
+    type: bridge
+    description: Where the rooms are mirrored.
+    default: [Mattermost, $first]
+
+group:
+  name: Prove It
+  description: Bug reports must prove themselves before a maintainer reads them.
+
+rooms:
+  - name: sqlparse-intake
+    description: Report a security bug in sqlparse here. You will be asked for a proof as data (entry point + SQL payload).
+    bridge: "{bridge}"
+    channel_type: channel_public   # anyone may report
+    agents: [prove-it-intake]
+    users: ["{$creator}"]
+    instructions: |
+      Anyone may post a bug report about sqlparse here. Only the Intake agent is
+      in this room, and it runs no code. Each report gets its own thread, where
+      Intake asks for a proof in the data-only format and later posts the
+      maintainers' decision. A report's target is this room, never the text.
+
+  - name: sqlparse-triage
+    description: Maintainers and agents. sqlparse tickets arrive here with proof, not opinions.
+    bridge: "{bridge}"
+    # Private: reporters must not be able to join the room where tickets are decided.
+    channel_type: channel_private
+    agents: [prove-it-intake, prove-it-reproducer, prove-it-skeptic]
+    users: ["{$creator}"]
+    instructions: |
+      Code decides, agents argue, humans rule. Tickets from #sqlparse-intake
+      land here as fixed fields. Nobody in this room reads the reporter's prose,
+      and the payload only ever runs in the sandbox. The same Reproducer and
+      Skeptic serve this room and the PyYAML room; a maintainer may decide a
+      ticket from either triage room.
+
+      Flow for every ticket:
+      1. A maintainer asks @prove-it-reproducer to check it. The Reproducer
+         runs `python -m proveit check <id>` (vulnerable build only) and
+         explains the evidence. Intake picks the sqlparse build from the ticket.
+      2. @prove-it-skeptic reads `python -m proveit evidence <id>`, works
+         through its checklist, and ends with `@prove-it-intake concur <id> review=<token>`
+         or `@prove-it-intake dispute <id> <reason_code> review=<token> [note]`.
+      3. A maintainer may steer: ask the Reproducer for the patched build
+         (`check <id> --build patched`) or the evidence pack.
+      4. A maintainer decides, addressed to Intake: `escalate <id> [note]`
+         (needs a current concur, or an override), `close <id> [reason=<code>] <note>`, or
+         `override <id> [note]`. Intake tells the reporter in their thread.
+
+      Quarantined reports stay with maintainers until one replies
+      `@prove-it-intake release <id>`; they can never be escalated directly.
+    docs:
+      - name: verdict-rules
+        description: How a sandbox run becomes evidence (sqlparse)
+        instructions: Cite these rules when you explain a result.
+        content: |
+          A proof is data: an allowlisted entry point (parse, format, split) and
+          a SQL payload of at most 64 KB. Python code is INVALID_PROOF and never
+          runs; an entry point that is not one of the three is not on the
+          allowlist.
+          Inside the container a parent process starts a child that makes the one
+          library call, and the parent alone writes the result:
+          RESOURCE_EXHAUSTION: the call ran past 10 s or 192 MB (the realistic
+            class for a parser; CVE-2023-30608 is a ReDoS).
+          CRASH: the call died on a native fault (a signal such as SIGSEGV).
+          CODE_EXECUTION: /tmp/proveit/marker appeared (not expected for a parser).
+          NOT_REPRODUCED: the call returned or raised normally.
+          check runs sqlparse 0.4.3 (vulnerable); the patched 0.4.4 runs only
+          when someone asks.
+      - name: scope-policy
+        description: What counts as a sqlparse vulnerability here (docs/policy/sqlparse-scope.md)
+        instructions: Use the out_of_scope_api reason code for a report outside this scope.
+        content: |
+          Threat model: an application passes SQL it did not write to a documented
+          sqlparse function; the attacker controls only that SQL text.
+          In scope: parse, format, split (the documented top-level API).
+          sqlparse documents NOTHING as unsafe for untrusted input, so the
+          out-of-scope entry-point list is empty: a report that names an internal
+          module (sqlparse.lexer, sqlparse.engine.*) is simply not on the
+          allowlist, not "out of scope". Out of scope as for every target: proofs
+          that need network access, other files, environment variables, or code
+          instead of data. There is rarely a use for out_of_scope_api here.
+    kickoff: |
+      @prove-it-reproducer @prove-it-skeptic this is the sqlparse triage room. In
+      one line each, say what you will do when a maintainer asks you about a
+      ticket.
+
+links:
+  - from: sqlparse-intake
+    to: sqlparse-triage
+    label: triage

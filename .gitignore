@@ -14,3 +14,4 @@ __pycache__/
 *.pyc
 LIVE-REPORT-2026-11-06.md
 TRUST-REPORT-2026-11-06.md
+.proveit-trials/

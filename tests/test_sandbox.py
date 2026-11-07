@@ -241,13 +241,44 @@ class Isolation(unittest.TestCase):
         self.assertEqual(left, [])
 
 
+@unittest.skipUnless(DOCKER, "Docker is not running")
+class Repeats(WorkDirTest):
+    """U1a with real containers: a check is config.CHECK_RUNS fresh containers, none left afterwards."""
+
+    def test_real_check_runs_three_fresh_containers_and_leaves_none(self):
+        agent = self.make_intake()
+        self.report(agent, replay("01-real-cve-2020-14343.md"))
+        tid = store.all_tickets()[-1]["id"]
+        record, run, _ = actions.check(tid, actor="agent", by="reproducer")
+        self.assertEqual((run["outcome"], run["runs"], run["agreeing"]), ("CODE_EXECUTION", 3, 3), run.get("split"))
+        names = [d["container"] for d in run["runs_detail"]]
+        self.assertEqual(len(set(names)), 3, names)
+        self.assertTrue(all(d["marker_created"] for d in run["runs_detail"]), "each run starts with no marker")
+        self.assertTrue(run["image_id"].startswith("sha256:"), run["image_id"])
+        image = subprocess.run(["docker", "image", "inspect", "--format", "{{.Id}}", "proveit-target:vulnerable"],
+                               capture_output=True, text=True, timeout=20).stdout.strip()
+        self.assertEqual(run["image_id"], image)
+        self.assertEqual(record["status"], "reproduced")
+        left = None
+        for _ in range(10):  # --rm removal is asynchronous
+            left = subprocess.run(["docker", "ps", "-a", "-q", "--filter", "name=proveit-run-"],
+                                  capture_output=True, text=True, timeout=20).stdout.split()
+            if not left:
+                break
+            time.sleep(1)
+        self.assertEqual(left, [])
+
+
 CANARY = "Zq9CANARYx"
 CANARY_REPORT = """Title: {c} title {c}
 Severity: critical
+Affected version: 5.3.1
 Entry point: yaml.full_load
 Claimed impact: arbitrary code execution {c} in the impact line
 
 Body text {c} that explains nothing.
+expected: nothing happens to {c}
+actual: {c} happens instead
 
 ```yaml
 # comment {c}
@@ -282,7 +313,7 @@ class Canary(WorkDirTest):
                    self.cli("evidence", tid), self.cli("evidence", tid, "--json"), self.cli("show", tid),
                    self.cli("list"), self.cli("tally"), self.cli("tally", "--json"),
                    self.cli("evidence", tid, role="skeptic")]
-        self.say(agent, "@prove-it-intake dispute %s testing" % tid, sender="prove-it-skeptic", kind="agent")
+        self.say(agent, "@prove-it-intake dispute %s outcome_mismatch testing" % tid, sender="prove-it-skeptic", kind="agent")
         record = store.load(tid)
         run = store.load_run(record["runs"][0]["file"])
         self.assertEqual(run["exception_type"], "ConstructorError", "the canary must have reached an exception message")

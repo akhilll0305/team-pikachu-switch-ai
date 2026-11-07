@@ -26,6 +26,8 @@ filesystem = { ":root" = "read", ":tmpdir" = "write", "~/.proveit" = "none" }
 network = { enabled = false }
 
 [shell_environment_policy]
-# PYTHONPATH lets `python -m proveit` run from this folder; PROVEIT_ACTOR and
-# PROVEIT_AGENT make the CLI allow only the Skeptic's read-only commands.
+# Belt and braces. agents/skeptic/proveit/ already makes `python -m proveit` work
+# from this folder and fixes the Skeptic role even when a session does not apply
+# these (the Switch-managed session on 2026-11-07 did not: "No module named
+# proveit"). PROVEIT_ACTOR and PROVEIT_AGENT limit the CLI to read-only commands.
 set = { PROVEIT_ACTOR = "agent", PROVEIT_AGENT = "skeptic", PYTHONPATH = "../..", PYTHONDONTWRITEBYTECODE = "1" }

@@ -6,6 +6,7 @@ The folder holds only what agents may already read, never reporter text:
   runs/*.json     every sandbox run record
   evidence.json   the evidence pack (checklist, notes, verdict, override)
   evidence.txt    the same, as the Skeptic reads it
+  advisory/*      the advisory pack, when the ticket was escalated (DRAFT; no payload)
   manifest.json   SHA-256 of every file above, the payload's SHA-256, the
                   pinned PyYAML builds, and when it was made
 
@@ -18,7 +19,7 @@ import json
 import time
 from pathlib import Path
 
-from . import config, evidence, store
+from . import config, evidence, store, targets
 
 MANIFEST = "manifest.json"
 
@@ -43,13 +44,20 @@ def export(ticket_id, out=None):
     for entry in record.get("runs", []):
         name = Path(entry["file"]).name
         write("runs/" + name, json.dumps(store.load_run(entry["file"]), indent=2, sort_keys=True))
+    from . import advisory
+    pack_dir = advisory.folder(ticket_id)
+    if pack_dir.is_dir():
+        (folder / advisory.FOLDER).mkdir()
+        for name in advisory.FILES:
+            if (pack_dir / name).exists():
+                write("%s/%s" % (advisory.FOLDER, name), (pack_dir / name).read_text(encoding="utf-8"))
     write("evidence.json", json.dumps(pack, indent=2, sort_keys=True))
     write("evidence.txt", evidence.text(pack) + "\n")
     files = sorted(str(p.relative_to(folder)).replace("\\", "/") for p in folder.rglob("*") if p.is_file())
     manifest = {
         "ticket": ticket_id, "generated_at": stamp, "status": record["status"],
         "payload_sha256": record.get("payload_sha256"), "entry_point": record.get("entry_point"),
-        "target": {name: spec["version"] for name, spec in config.TARGET["builds"].items()},
+        "target": {name: spec["version"] for name, spec in targets.for_record(record).builds.items()},
         "files": {name: _sha256(folder / name) for name in files},
         "note": "Fixed fields only: no reporter text and no payload. Check with: python -m proveit export --verify <folder>",
     }

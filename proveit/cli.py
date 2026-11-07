@@ -1,15 +1,18 @@
 """`python -m proveit ...`: the commands the agents in #triage and maintainers run.
 
   build                          build the vulnerable and patched sandbox images
-  check R-001 [--build patched]  run the ticket's payload on one build (default: vulnerable)
-        [--loader full_load]     ...optionally through another allowlisted entry point
+  check R-001 [--build patched]  run the ticket's payload on one build (default: vulnerable),
+                                 config.CHECK_RUNS times, each in a new container
+        [--loader ENTRY_POINT]   ...optionally through another entry point allowed for the ticket's target
   evidence R-001                 the evidence pack: fixed fields only, never reporter text
   show R-001                     the ticket record
   list                           tickets and their status
   concur R-001                   the Skeptic could not disprove the evidence
-  dispute R-001 --reason TEXT    the Skeptic disputes it; blocks escalation until a human overrides
+  dispute R-001 --code CODE      a dispute with one reason code (see proveit/reasons.py) and an optional
+        [--note TEXT]            internal note; blocks escalation until a human overrides
   override R-001 --by NAME       a maintainer overrides a dispute (humans only)
   cost R-001 --usd X --source S  a maintainer records agent cost from Switch ROI or a dashboard (humans only)
+  clear-reporter KEY             lift a reporter's one-open-report limit (humans only; KEY as Intake printed it)
   tally                          totals for the demo's closing slide
   submit FILE                    create a ticket from a report file, without Switch
   export R-001 [--out DIR]       the ticket's evidence as a folder with a SHA-256 manifest
@@ -21,16 +24,17 @@ skeptic, both set by the agent's own config (agents/reproducer/.claude/settings.
 agents/skeptic/.codex/config.toml). The Reproducer may run check and the
 read-only commands; the Skeptic only the read-only ones, and it records concur /
 dispute by posting them to Intake in #proveit-triage, where Switch vouches for
-the sender. An agent's --by is replaced by its role. override and cost are for
-humans only.
+the sender. An agent's --by is replaced by its role. override, cost and
+clear-reporter are for humans only.
 """
 
 import argparse
 import json
 import os
 import sys
+from pathlib import Path
 
-from . import actions, evidence, judge, reports, sandbox, screen, states, store
+from . import actions, evidence, judge, reasons, reports, sandbox, screen, states, store, targets
 from .config import ENTRY_POINTS, TARGET
 
 
@@ -58,7 +62,7 @@ def refuse_for_role(cmd):
     """Why an agent may not run `cmd`, or None. Humans are never refused here."""
     if actor() != "agent":
         return None
-    if cmd in ("override", "cost"):
+    if cmd in ("override", "cost", "clear-reporter"):
         return "only humans may %s; this shell runs as an agent (PROVEIT_ACTOR=agent)" % cmd
     role = agent_role()
     allowed = ROLE_COMMANDS.get(role, READ_ONLY)
@@ -66,7 +70,7 @@ def refuse_for_role(cmd):
         return None
     if cmd in ("concur", "dispute"):
         return ("agents record verdicts in #proveit-triage, not here: post `@prove-it-intake %s R-001%s` "
-                "(Intake accepts it only from the Skeptic)" % (cmd, " <reason>" if cmd == "dispute" else ""))
+                "(Intake accepts it only from the Skeptic)" % (cmd, " <reason_code> [note]" if cmd == "dispute" else ""))
     if role is None:
         return ("this agent has no role (PROVEIT_AGENT is not reproducer or skeptic), so it may only read: %s"
                 % ", ".join(sorted(READ_ONLY)))
@@ -78,15 +82,27 @@ def _print(obj):
 
 
 def cmd_build(args):
-    built = sandbox.build(force=args.force, quiet=False)
+    from . import targets
+    if getattr(args, "target", None):
+        chosen = [targets.get(args.target)]
+        if chosen[0].key != args.target:
+            raise SystemExit("unknown target %r; known: %s" % (args.target, ", ".join(targets.TARGETS)))
+    else:
+        chosen = targets.buildable()
+    built = []
+    for target in chosen:
+        built += sandbox.build(force=args.force, quiet=False, target=target)
     print("built: %s" % (", ".join(built) or "nothing (images are current)"))
 
 
 def cmd_check(args):
     record, run, path = actions.check(args.ticket, args.build, actor(), args.by, args.loader)
-    print("%s %s build (PyYAML %s) via %s: %s" % (args.ticket, args.build, run["target_version"],
-                                                 run.get("entry_point"), run.get("outcome")))
+    print(judge.headline(args.ticket, run))
     print("  - " + judge.describe(run))
+    if judge.disagreed(run):
+        print("  runs disagreed: see each run")
+        for line in judge.run_lines(run):
+            print("    " + line)
     print("ticket status: %s" % record["status"])
     for note in evidence.pack(record)["notes"]:
         print("note: " + note)
@@ -116,8 +132,9 @@ def cmd_concur(args):
 
 
 def cmd_dispute(args):
-    record = actions.dispute(args.ticket, args.reason, actor(), args.by)
-    print("%s: disputed by %s; escalation is blocked until a maintainer overrides" % (record["id"], args.by))
+    record = actions.dispute(args.ticket, args.code, actor(), args.by, args.note or "")
+    print("%s: disputed by %s (%s); escalation is blocked until a maintainer overrides" % (
+        record["id"], args.by, record["skeptic"]["code"]))
 
 
 def cmd_override(args):
@@ -128,6 +145,15 @@ def cmd_override(args):
 def cmd_cost(args):
     record = actions.record_cost(args.ticket, args.usd, args.source, actor(), args.by)
     print("%s: agent cost $%.2f recorded (source: %s)" % (record["id"], record["cost"]["usd"], record["cost"]["source"]))
+
+
+def cmd_clear_reporter(args):
+    from . import reputation
+    try:
+        key, _ = reputation.clear(args.key)
+    except ValueError as exc:
+        sys.exit("refused: %s" % exc)
+    print("Reporter %s: limit lifted (invalid count reset to 0)." % reputation.short(key))
 
 
 def cmd_tally(args):
@@ -154,6 +180,13 @@ def cmd_export(args):
 
 
 def cmd_doctor(args):
+    if args.trial:
+        from .trial import activate
+        from . import intake
+        try:
+            intake.STATE_FILE = Path(activate(args.trial)["state_file"])
+        except ValueError as exc:
+            sys.exit(str(exc))
     from . import doctor
     report = doctor.run(live=not args.offline)
     if report.failed:
@@ -182,28 +215,37 @@ def main(argv=None):
     parser = argparse.ArgumentParser(prog="python -m proveit", description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="cmd", required=True)
-    p = sub.add_parser("build"); p.add_argument("--force", action="store_true"); p.set_defaults(fn=cmd_build)
+    p = sub.add_parser("build"); p.add_argument("--force", action="store_true")
+    p.add_argument("--target", help="which target to build (default: the ones built by default, i.e. PyYAML)")
+    p.set_defaults(fn=cmd_build)
     p = sub.add_parser("check")
     p.add_argument("ticket")
     p.add_argument("--build", choices=list(TARGET["builds"]), default="vulnerable")
-    p.add_argument("--loader", choices=list(ENTRY_POINTS), help="run through another allowlisted entry point")
+    p.add_argument("--loader", choices=sorted({e for t in targets.TARGETS.values() for e in t.entry_points}),
+                   help="entry point allowed for this ticket's target (validated before running)")
     p.add_argument("--by", default="cli")
     p.set_defaults(fn=cmd_check)
     p = sub.add_parser("evidence"); p.add_argument("ticket"); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_evidence)
     p = sub.add_parser("show"); p.add_argument("ticket"); p.set_defaults(fn=cmd_show)
     sub.add_parser("list").set_defaults(fn=cmd_list)
     p = sub.add_parser("concur"); p.add_argument("ticket"); p.add_argument("--by", default="skeptic"); p.set_defaults(fn=cmd_concur)
-    p = sub.add_parser("dispute"); p.add_argument("ticket"); p.add_argument("--reason", required=True)
+    p = sub.add_parser("dispute"); p.add_argument("ticket")
+    p.add_argument("--code", required=True, choices=reasons.ORDER, help="exactly one reason code")
+    p.add_argument("--note", help="internal note: stays in triage, never sent to the reporter")
     p.add_argument("--by", default="skeptic"); p.set_defaults(fn=cmd_dispute)
     p = sub.add_parser("override"); p.add_argument("ticket"); p.add_argument("--by", required=True)
     p.add_argument("--note"); p.set_defaults(fn=cmd_override)
     p = sub.add_parser("cost"); p.add_argument("ticket"); p.add_argument("--usd", type=float, required=True)
     p.add_argument("--source", required=True); p.add_argument("--by", default="maintainer"); p.set_defaults(fn=cmd_cost)
     p = sub.add_parser("tally"); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_tally)
+    p = sub.add_parser("clear-reporter", help="lift a reporter's one-open-report limit (humans only)")
+    p.add_argument("key", help="the reporter key Intake printed (12 or more hex characters)")
+    p.set_defaults(fn=cmd_clear_reporter)
     p = sub.add_parser("submit"); p.add_argument("file"); p.set_defaults(fn=cmd_submit)
     p = sub.add_parser("export"); p.add_argument("ticket", nargs="?"); p.add_argument("--out")
     p.add_argument("--verify", metavar="DIR"); p.set_defaults(fn=cmd_export)
     p = sub.add_parser("doctor", help="check this machine is ready for the demo")
+    p.add_argument("--trial", help="check only this trial's isolated configuration")
     p.add_argument("--offline", action="store_true", help="skip the checks that need the Switch server")
     p.set_defaults(fn=cmd_doctor)
     args = parser.parse_args(argv)

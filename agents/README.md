@@ -28,7 +28,7 @@ without knowing where you cloned the repository. Older versions kept these in
 | Action | Who | How |
 | --- | --- | --- |
 | Run a payload (`check`) | Reproducer | its shell, `python -m proveit check R-001` |
-| Concur / dispute | Skeptic | a message in `#proveit-triage`: `@prove-it-intake concur R-001` or `@prove-it-intake dispute R-001 <reason>`. Switch tells Intake who sent it; Intake records it only from `prove-it-skeptic` (or a maintainer). The Skeptic's shell is read-only. |
+| Concur / dispute | Skeptic | a message in `#proveit-triage`: `@prove-it-intake concur R-001 review=<token>` or `@prove-it-intake dispute R-001 <reason_code> review=<token> [note]` (one code from `proveit/reasons.py`). Switch tells Intake who sent it; Intake records it only from `prove-it-skeptic` (or a maintainer). The Skeptic's shell is read-only. |
 | Escalate, close, override, release | Maintainers listed in Intake's settings | `@prove-it-intake escalate R-001`, ... (`python -m proveit.intake maintainers add <name>`) |
 
 `PROVEIT_AGENT` gives each agent its role in the CLI, and an agent's `--by` is
@@ -61,3 +61,18 @@ still live in the checkout's `work/`.
 `tests/test_agent_rules.py` checks the Claude settings as data, and the Codex
 rules and sandbox profile with Codex itself (`codex execpolicy` and `codex
 sandbox`) when Codex is installed.
+
+Every agent verdict must carry `review=<token>` copied from the evidence pack it inspected. Intake checks the token while holding the ticket lock; a delayed verdict is refused after the evidence changes. Maintainer verdicts may omit it. Update the live Skeptic instructions before using this branch.
+
+## How `python -m proveit` works from these folders
+
+Each folder has a small `proveit/` package (`agents/<role>/proveit/__init__.py`).
+Python looks in the working folder first for `python -m`, so the agent finds it.
+It points at the real `proveit/` in the checkout from its own location, and it
+fixes the folder's role (`PROVEIT_ACTOR=agent`, `PROVEIT_AGENT=<role>`).
+
+This does not depend on the session applying `PYTHONPATH` or role variables from
+the agent's config. On 2026-11-07 the Switch-managed Skeptic's session did not,
+and failed with `No module named proveit`. An environment that claims to be a
+human cannot widen the role either. `tests/test_agent_folders.py` checks both
+folders with those variables removed.

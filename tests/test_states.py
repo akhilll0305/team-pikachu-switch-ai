@@ -39,6 +39,16 @@ ALLOWED = [
     ("reproduced", "override", "human", "reproduced", "reproduced"),  # escalate without a current concur, recorded
     ("reproduced", "escalate", "human", None, "escalated"),
     ("not_reproduced", "escalate", "human", None, "escalated"),
+    # Clean runs that disagreed (U1a). Escalating it also needs a current override, checked in actions.
+    ("in_triage", "check", "agent", "not_reliably_reproduced", "not_reliably_reproduced"),
+    ("reproduced", "check", "agent", "not_reliably_reproduced", "not_reliably_reproduced"),
+    ("not_reliably_reproduced", "check", "agent", "reproduced", "reproduced"),
+    ("not_reliably_reproduced", "check_patched", "agent", None, "not_reliably_reproduced"),
+    ("not_reliably_reproduced", "concur", "agent", None, "not_reliably_reproduced"),
+    ("not_reliably_reproduced", "dispute", "agent", None, "disputed"),
+    ("disputed", "override", "human", "not_reliably_reproduced", "not_reliably_reproduced"),
+    ("not_reliably_reproduced", "override", "human", "not_reliably_reproduced", "not_reliably_reproduced"),
+    ("not_reliably_reproduced", "escalate", "human", None, "escalated"),
 ] + [(s, "close", "human", None, "closed") for s in sorted(states.OPEN)]
 
 ILLEGAL = [
@@ -62,6 +72,8 @@ ILLEGAL = [
     ("closed", "escalate", "human", None, "cannot escalate"),
     ("closed", "close", "human", None, "cannot close"),
     ("in_triage", "check_patched", "agent", None, "cannot check_patched"),
+    ("not_reliably_reproduced", "escalate", "agent", None, "only humans"),
+    ("not_reliably_reproduced", "override", "agent", "not_reliably_reproduced", "only humans"),
     ("new", "receive", "agent", "in_triage", "only"),
 ]
 

@@ -58,6 +58,14 @@ class WorkDirTest(unittest.TestCase):
                                                             "sender_kind": "user"}})
 
     def say(self, agent, text, sender="maintainer", kind="user", message_id=None):
+        # Simulate the Skeptic carrying the token from the evidence it just read.
+        # Race/missing-token tests call on_triage_event directly instead.
+        if kind == "agent" and "review=" not in text:
+            import re
+            from proveit import evidence, store
+            match = re.search(r"@prove-it-intake\s+(?:concur|dispute)\s+(R-\d+)", text)
+            if match:
+                text += " review=" + evidence.review_token(store.load(match.group(1)))
         self._n = getattr(self, "_n", 0) + 1
         payload = {"body": text, "message_id": message_id or "t%d" % self._n, "thread_id": None, "sender_name": sender,
                    "sender_kind": kind}
@@ -72,16 +80,35 @@ def fake_run(outcome, build="vulnerable", entry="full_load", **extra):
     run = {"outcome": outcome, "why": "test", "build": build, "target_version": versions[build],
            "entry_point": entry, "payload_sha256": "0" * 64, "payload_bytes": 10, "seconds": 0.5,
            "peak_rss_mb": 14.0, "marker_created": outcome == "CODE_EXECUTION", "events": [], "ran": True,
-           "exception_type": None, "exception_frames": []}
+           "exception_type": None, "exception_frames": [], "image_id": "sha256:" + "f" * 64}
     run.update(extra)
     return run
 
 
-def stub_runs(*outcomes):
-    """Patch the sandbox so successive runs return these outcomes (or run records, for full control)."""
-    runs = iter(outcomes)
+def _patch_run_poc(items):
+    runs = iter(items)
+    counter = iter(range(1, 10 ** 6))
 
-    def run_poc(entry, payload, build):
+    def run_poc(entry, payload, build, target=None):
         nxt = next(runs)
-        return dict(nxt) if isinstance(nxt, dict) else fake_run(nxt, build=build, entry=entry)
+        run = dict(nxt) if isinstance(nxt, dict) else fake_run(nxt, build=build, entry=entry)
+        run.setdefault("container", "proveit-run-fake%06d" % next(counter))
+        if target is not None:
+            run.setdefault("target", target.key)
+            run.setdefault("target_name", target.name)
+        return run
     return mock.patch("proveit.actions.sandbox.run_poc", side_effect=run_poc)
+
+
+def stub_runs(*outcomes):
+    """Patch the sandbox so successive *checks* return these outcomes (or run records, for full control).
+
+    Each check runs config.CHECK_RUNS times; every run of one check gets the
+    same outcome, so the check's runs agree. Use stub_each for runs that differ.
+    """
+    return _patch_run_poc([o for o in outcomes for _ in range(config.CHECK_RUNS)])
+
+
+def stub_each(*outcomes):
+    """Patch the sandbox so successive *runs* (not checks) return these outcomes."""
+    return _patch_run_poc(list(outcomes))

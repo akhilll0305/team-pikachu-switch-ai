@@ -15,7 +15,7 @@ PYTHONS = ["python", "python3", "python3.9", "python3.10", "python3.11", "python
            "py", "pypy", "pypy3", "/usr/bin/python3", "/usr/local/bin/python3", "/opt/homebrew/bin/python3"]
 
 prefix_rule(
-    pattern = [PYTHONS, "-m", "proveit", ["check", "override", "cost", "submit", "build", "concur", "dispute", "export", "doctor"]],
+    pattern = [PYTHONS, "-m", "proveit", ["check", "override", "cost", "submit", "build", "concur", "dispute", "export", "doctor", "clear-reporter"]],
     decision = "forbidden",
     justification = "The Skeptic only reads evidence; it records concur / dispute by posting to @prove-it-intake in #proveit-triage.",
     match = ["python -m proveit check R-001", "python3 -m proveit concur R-001", "python -m proveit override R-001 --by x"],

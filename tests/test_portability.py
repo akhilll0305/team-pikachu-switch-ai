@@ -52,7 +52,7 @@ class DockerTimeouts(unittest.TestCase):
 class BuildFailures(unittest.TestCase):
     class FakeBuild:
         def __init__(self, lines, code):
-            self.stdout = iter(lines)
+            self.lines = lines
             self.returncode = code
 
         def wait(self, timeout=None):
@@ -60,10 +60,11 @@ class BuildFailures(unittest.TestCase):
 
     def build_with(self, lines, code):
         fake = self.FakeBuild(lines, code)
-        fake.stdout = mock.MagicMock()
-        fake.stdout.__iter__.return_value = iter(lines)
+        def popen(cmd, stdout, **kwargs):
+            stdout.write("".join(lines).encode("utf-8"))
+            return fake
         with mock.patch("proveit.sandbox.image_current", return_value=False), \
-                mock.patch("proveit.sandbox.subprocess.Popen", return_value=fake):
+                mock.patch("proveit.sandbox.subprocess.Popen", side_effect=popen):
             return sandbox.build("vulnerable", force=True)
 
     def test_failure_shows_the_end_of_dockers_output(self):

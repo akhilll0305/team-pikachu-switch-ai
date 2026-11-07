@@ -41,7 +41,7 @@ class Validate(unittest.TestCase):
 
 
 def report(entry, block, lang="yaml"):
-    return ("Title: test\nSeverity: critical\nEntry point: %s\nClaimed impact: arbitrary code execution\n\n"
+    return ("Title: test\nSeverity: critical\nAffected version: 5.3.1\nEntry point: %s\nClaimed impact: arbitrary code execution\n\n"
             "```%s\n%s\n```\n" % (entry, lang, block))
 
 
@@ -64,7 +64,8 @@ class RejectedBeforeAnyRun(WorkDirTest):
             for name, text in self.CASES.items():
                 with self.subTest(name):
                     agent = self.make_intake()
-                    self.report(agent, text)
+                    # One reporter per case: rejections count against a reporter (D-018), tested in test_reputation.
+                    self.report(agent, text, sender="reporter-" + name)
                     from proveit import store
                     record = store.all_tickets()[-1]
                     self.assertEqual(record["status"], "invalid_proof", record)
@@ -96,14 +97,14 @@ class Fixtures(unittest.TestCase):
         self.assertEqual(merged.entry_point, "safe_load")
 
     def test_entry_point_only_followup_keeps_the_payload(self):
-        first = reports.parse("Claimed impact: code execution\n\n```yaml\n!!python/object/new:tuple [x]\n```\n")
+        first = reports.parse("Affected version: 5.3.1\nClaimed impact: code execution\n\n```yaml\n!!python/object/new:tuple [x]\n```\n")
         self.assertEqual(first.missing, ["entry_point"])
         merged = reports.merge(first, "Entry point: yaml.full_load")
         self.assertEqual((merged.entry_point, merged.missing, merged.poc_problem), ("full_load", [], ""))
         self.assertEqual(merged.payload, first.payload)
 
     def test_entry_point_only_followup_fixes_an_unknown_entry_point(self):
-        first = reports.parse("Entry point: yaml.whatever\nClaimed impact: code execution\n\n```yaml\na: 1\n```\n")
+        first = reports.parse("Affected version: 5.3.1\nEntry point: yaml.whatever\nClaimed impact: code execution\n\n```yaml\na: 1\n```\n")
         self.assertEqual(first.poc_problem, "unknown_entry_point")
         merged = reports.merge(first, "Entry point: yaml.safe_load")
         self.assertTrue(merged.complete())
